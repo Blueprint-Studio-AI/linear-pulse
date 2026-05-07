@@ -159,12 +159,9 @@ function formatIssueEvent(payload: LinearWebhookPayload): FormattedMessage {
     return null;
   }
 
-  const changedFields = Object.keys(updatedFrom);
-  return {
-    text: `\ud83d\udd04 Updated by ${actor}\n${titleLine(title, identifier)}\nChanged: ${changedFields.map(escapeHtml).join(", ")}`,
-    url: payload.url,
-    projectId: project?.id,
-  };
+  // Generic updates (description, labels, estimate, etc.) — skip them
+  // The specific handlers above cover the changes people actually care about
+  return null;
 }
 
 function formatCommentEvent(payload: LinearWebhookPayload): FormattedMessage {
