@@ -1,5 +1,6 @@
 import { Hono } from "hono";
 import { verifyLinearSignature, isTimestampValid } from "./webhook/verify";
+import { handleTelegramUpdate } from "./webhook/telegram";
 import { shouldForwardEvent } from "./filters/engine";
 import { formatLinearEvent } from "./telegram/formatter";
 import { TelegramClient } from "./telegram/client";
@@ -152,6 +153,14 @@ app.post("/", (c) => {
     return handleLinearWebhook(c);
   }
   return c.json({ error: "not found" }, 404);
+});
+
+// Telegram bot commands
+app.post("/webhook/telegram", async (c) => {
+  const update = await c.req.json();
+  const telegram = new TelegramClient(c.env.TELEGRAM_BOT_TOKEN);
+  await handleTelegramUpdate(update, telegram, c.env.CONFIG);
+  return c.json({ ok: true });
 });
 
 // Admin: get config
