@@ -6,14 +6,6 @@ export interface FormattedMessage {
   projectId?: string;
 }
 
-const PRIORITY_EMOJI: Record<number, string> = {
-  0: "",
-  1: "\ud83d\udd34",
-  2: "\ud83d\udfe0",
-  3: "\ud83d\udfe1",
-  4: "\ud83d\udd35",
-};
-
 const PRIORITY_LABEL: Record<number, string> = {
   0: "None",
   1: "Urgent",
@@ -54,6 +46,23 @@ function getDataField<T>(
   return data[field] as T | undefined;
 }
 
+// Format: "Title (BPSTU-123)" or just "Title" if no identifier
+function titleWithId(title: string, identifier: string): string {
+  if (identifier) return `${title} (${identifier})`;
+  return title;
+}
+
+// Only show priority if urgent (1) — returns emoji or empty string
+function urgentTag(priority: number): string {
+  return priority === 1 ? " \ud83d\udd34" : "";
+}
+
+// "in {project}" clause or empty
+function inProject(project: { name: string } | undefined): string {
+  if (!project) return "";
+  return ` in ${escapeHtml(project.name)}`;
+}
+
 export function formatLinearEvent(
   payload: LinearWebhookPayload
 ): FormattedMessage | null {
@@ -79,19 +88,12 @@ function formatIssueEvent(payload: LinearWebhookPayload): FormattedMessage {
   const title = escapeHtml((data.title as string) || "Untitled");
   const actor = escapeHtml(actorName(payload));
   const project = getDataField<{ id: string; name: string }>(data, "project");
-  const team = getDataField<{ name: string }>(data, "team");
   const priority = (data.priority as number) ?? 0;
-  const priorityLabel = (data.priorityLabel as string) ?? "";
   const state = getDataField<{ name: string; type: string }>(data, "state");
 
   if (payload.action === "create") {
-    const pEmoji = PRIORITY_EMOJI[priority] ?? "";
-    const pLabel = priorityLabel || (PRIORITY_LABEL[priority] ?? "");
-    let details = pEmoji || pLabel ? `Priority: ${pEmoji} ${escapeHtml(pLabel)}`.trim() : "";
-    if (project) details += `${details ? " \u00b7 " : ""}Project: ${escapeHtml(project.name)}`;
-
     return {
-      text: `\ud83d\udccb <b>New issue</b> by ${actor}\n<b>${identifier}: ${title}</b>\n${details}`,
+      text: `\ud83d\udccb <b>New issue</b>${inProject(project)} by ${actor}${urgentTag(priority)}\n${titleWithId(title, identifier)}`,
       url: payload.url,
       projectId: project?.id,
     };
@@ -99,7 +101,7 @@ function formatIssueEvent(payload: LinearWebhookPayload): FormattedMessage {
 
   if (payload.action === "remove") {
     return {
-      text: `\ud83d\uddd1 <b>Issue removed</b> by ${actor}\n<b>${identifier}: ${title}</b>`,
+      text: `\ud83d\uddd1 <b>Issue removed</b>${inProject(project)} by ${actor}\n${titleWithId(title, identifier)}`,
       url: payload.url,
       projectId: project?.id,
     };
@@ -113,7 +115,7 @@ function formatIssueEvent(payload: LinearWebhookPayload): FormattedMessage {
     const oldState = updatedFrom.state as { name: string; type: string };
     const emoji = STATUS_EMOJI[state?.type ?? ""] ?? "\ud83d\udd04";
     return {
-      text: `${emoji} <b>Marked as ${escapeHtml(state?.name ?? "Unknown")}</b> by ${actor}\n<b>${identifier}: ${title}</b>\nWas: ${escapeHtml(oldState.name)} \u2192 Now: ${escapeHtml(state?.name ?? "Unknown")}`,
+      text: `${emoji} <b>Marked as ${escapeHtml(state?.name ?? "Unknown")}</b> by ${actor}\n${titleWithId(title, identifier)}\n${escapeHtml(oldState.name)} \u2192 ${escapeHtml(state?.name ?? "Unknown")}`,
       url: payload.url,
       projectId: project?.id,
     };
@@ -124,38 +126,51 @@ function formatIssueEvent(payload: LinearWebhookPayload): FormattedMessage {
     const assignee = getDataField<{ name: string }>(data, "assignee");
     if (assignee) {
       return {
-        text: `\ud83d\udc64 <b>${identifier} assigned to ${escapeHtml(assignee.name)}</b>\n${title}\nBy: ${actor}${priority > 0 ? ` \u00b7 Priority: ${PRIORITY_EMOJI[priority] ?? ""} ${escapeHtml(priorityLabel || (PRIORITY_LABEL[priority] ?? ""))}`.trim() : ""}`,
+        text: `\ud83d\udc64 <b>Assigned to ${escapeHtml(assignee.name)}</b> by ${actor}\n${titleWithId(title, identifier)}`,
         url: payload.url,
         projectId: project?.id,
       };
     } else {
       return {
-        text: `\ud83d\udc64 <b>${identifier} unassigned</b> by ${actor}\n${title}`,
+        text: `\ud83d\udc64 <b>Unassigned</b> by ${actor}\n${titleWithId(title, identifier)}`,
         url: payload.url,
         projectId: project?.id,
       };
     }
   }
 
-  // Priority change
+  // Priority change — only show if escalated to urgent
   if ("priority" in updatedFrom) {
     const oldPriority = updatedFrom.priority as number;
-    const oldLabel = PRIORITY_LABEL[oldPriority] ?? "None";
-    const newLabel = PRIORITY_LABEL[priority] ?? priorityLabel;
-    const direction = priority < oldPriority ? "escalated" : "lowered";
-    const emoji = PRIORITY_EMOJI[priority] ?? "";
-    const oldEmoji = PRIORITY_EMOJI[oldPriority] ?? "";
-    return {
-      text: `${emoji || "\ud83d\udd04"} <b>Priority ${direction}</b> on ${identifier}\n${title}\nWas: ${oldEmoji} ${escapeHtml(oldLabel)} \u2192 Now: ${emoji} ${escapeHtml(newLabel)}`.replace(/  +/g, " "),
-      url: payload.url,
-      projectId: project?.id,
-    };
+    const isEscalation = priority < oldPriority;
+
+    if (priority === 1) {
+      // Escalated to urgent — always show
+      return {
+        text: `\ud83d\udd34 <b>Escalated to Urgent</b> by ${actor}\n${titleWithId(title, identifier)}`,
+        url: payload.url,
+        projectId: project?.id,
+      };
+    }
+
+    if (isEscalation) {
+      // Escalated but not to urgent — brief note
+      const newLabel = PRIORITY_LABEL[priority] ?? "Unknown";
+      return {
+        text: `\u26a1 <b>Priority raised to ${escapeHtml(newLabel)}</b> by ${actor}\n${titleWithId(title, identifier)}`,
+        url: payload.url,
+        projectId: project?.id,
+      };
+    }
+
+    // Lowered priority — skip (return null to filter it out)
+    return null;
   }
 
   // Generic update
   const changedFields = Object.keys(updatedFrom);
   return {
-    text: `\ud83d\udd04 <b>Issue updated</b> by ${actor}\n<b>${identifier}: ${title}</b>\nChanged: ${changedFields.map(escapeHtml).join(", ")}`,
+    text: `\ud83d\udd04 <b>Issue updated</b> by ${actor}\n${titleWithId(title, identifier)}\nChanged: ${changedFields.map(escapeHtml).join(", ")}`,
     url: payload.url,
     projectId: project?.id,
   };
@@ -169,17 +184,19 @@ function formatCommentEvent(payload: LinearWebhookPayload): FormattedMessage {
     "issue"
   );
   const body = truncate(escapeHtml((data.body as string) || ""), 200);
-  const issueRef = issue ? `${issue.identifier}` : "";
+  const issueTitle = issue
+    ? titleWithId(escapeHtml(issue.title), issue.identifier)
+    : "";
 
   if (payload.action === "create") {
     return {
-      text: `\ud83d\udcac <b>Comment</b> by ${actor} on <b>${issueRef}</b>\n\u201c${body}\u201d`,
+      text: `\ud83d\udcac <b>Comment</b> by ${actor}\n${issueTitle}\n\u201c${body}\u201d`,
       url: payload.url,
     };
   }
 
   return {
-    text: `\ud83d\udcac <b>Comment ${payload.action}d</b> by ${actor} on <b>${issueRef}</b>`,
+    text: `\ud83d\udcac <b>Comment ${payload.action}d</b> by ${actor}\n${issueTitle}`,
     url: payload.url,
   };
 }
@@ -205,7 +222,7 @@ function formatProjectUpdateEvent(
   const body = truncate(escapeHtml((data.body as string) || ""), 200);
 
   return {
-    text: `\ud83d\udce2 <b>Project update</b> on ${escapeHtml(project?.name ?? "Unknown")} by ${actor}\n\u201c${body}\u201d`,
+    text: `\ud83d\udce2 <b>Project update</b>${inProject(project)} by ${actor}\n\u201c${body}\u201d`,
     url: payload.url,
     projectId: project?.id,
   };
@@ -228,7 +245,7 @@ function formatSLAEvent(payload: LinearWebhookPayload): FormattedMessage {
   };
 
   return {
-    text: `${actionLabels[payload.action] ?? "\u23f1 SLA event"} on <b>${escapeHtml(issue.identifier)}</b>\n${escapeHtml(issue.title)}`,
+    text: `${actionLabels[payload.action] ?? "\u23f1 SLA event"}\n${titleWithId(escapeHtml(issue.title), issue.identifier)}`,
     url: payload.url,
   };
 }

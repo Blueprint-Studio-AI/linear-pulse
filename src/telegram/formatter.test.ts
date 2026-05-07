@@ -33,14 +33,27 @@ function makeIssuePayload(
 }
 
 describe("formatLinearEvent", () => {
-  it("formats issue creation", () => {
+  it("formats issue creation with project in header", () => {
     const result = formatLinearEvent(makeIssuePayload("create", {}));
     expect(result).not.toBeNull();
     expect(result!.text).toContain("New issue");
-    expect(result!.text).toContain("Tyler");
-    expect(result!.text).toContain("ENG-142");
+    expect(result!.text).toContain("in Linear Pulse");
+    expect(result!.text).toContain("by Tyler");
     expect(result!.text).toContain("API rate limiting");
+    expect(result!.text).toContain("(ENG-142)");
     expect(result!.url).toBe("https://linear.app/test/issue/ENG-142");
+  });
+
+  it("shows urgent tag on creation", () => {
+    const result = formatLinearEvent(makeIssuePayload("create", { priority: 1 }));
+    expect(result).not.toBeNull();
+    expect(result!.text).toContain("\ud83d\udd34");
+  });
+
+  it("does not show priority tag for non-urgent", () => {
+    const result = formatLinearEvent(makeIssuePayload("create", { priority: 3 }));
+    expect(result).not.toBeNull();
+    expect(result!.text).not.toContain("Priority");
   });
 
   it("formats status change", () => {
@@ -54,9 +67,10 @@ describe("formatLinearEvent", () => {
     expect(result).not.toBeNull();
     expect(result!.text).toContain("Done");
     expect(result!.text).toContain("In Progress");
+    expect(result!.text).toContain("(ENG-142)");
   });
 
-  it("formats assignee change", () => {
+  it("formats assignee change with title", () => {
     const result = formatLinearEvent(
       makeIssuePayload(
         "update",
@@ -65,11 +79,49 @@ describe("formatLinearEvent", () => {
       )
     );
     expect(result).not.toBeNull();
-    expect(result!.text).toContain("assigned");
-    expect(result!.text).toContain("Jordan");
+    expect(result!.text).toContain("Assigned to Jordan");
+    expect(result!.text).toContain("by Tyler");
+    expect(result!.text).toContain("API rate limiting");
+    expect(result!.text).toContain("(ENG-142)");
   });
 
-  it("formats comment creation", () => {
+  it("shows escalation to urgent", () => {
+    const result = formatLinearEvent(
+      makeIssuePayload(
+        "update",
+        { priority: 1, priorityLabel: "Urgent" },
+        { priority: 3, priorityLabel: "Medium" }
+      )
+    );
+    expect(result).not.toBeNull();
+    expect(result!.text).toContain("Escalated to Urgent");
+    expect(result!.text).toContain("\ud83d\udd34");
+  });
+
+  it("shows non-urgent escalation briefly", () => {
+    const result = formatLinearEvent(
+      makeIssuePayload(
+        "update",
+        { priority: 2, priorityLabel: "High" },
+        { priority: 3, priorityLabel: "Medium" }
+      )
+    );
+    expect(result).not.toBeNull();
+    expect(result!.text).toContain("Priority raised to High");
+  });
+
+  it("returns null for priority lowering", () => {
+    const result = formatLinearEvent(
+      makeIssuePayload(
+        "update",
+        { priority: 4, priorityLabel: "Low" },
+        { priority: 2, priorityLabel: "High" }
+      )
+    );
+    expect(result).toBeNull();
+  });
+
+  it("formats comment with issue title", () => {
     const payload: LinearWebhookPayload = {
       action: "create",
       type: "Comment",
@@ -89,6 +141,8 @@ describe("formatLinearEvent", () => {
     const result = formatLinearEvent(payload);
     expect(result).not.toBeNull();
     expect(result!.text).toContain("Alex");
+    expect(result!.text).toContain("API rate limiting");
+    expect(result!.text).toContain("(ENG-142)");
     expect(result!.text).toContain("scope this to just the public API");
   });
 
@@ -114,20 +168,6 @@ describe("formatLinearEvent", () => {
     expect(result).not.toBeNull();
     expect(result!.text.length).toBeLessThan(longBody.length);
     expect(result!.text).toContain("...");
-  });
-
-  it("formats priority change", () => {
-    const result = formatLinearEvent(
-      makeIssuePayload(
-        "update",
-        { priority: 1, priorityLabel: "Urgent" },
-        { priority: 3, priorityLabel: "Medium" }
-      )
-    );
-    expect(result).not.toBeNull();
-    expect(result!.text).toContain("escalated");
-    expect(result!.text).toContain("Medium");
-    expect(result!.text).toContain("Urgent");
   });
 
   it("formats generic event type", () => {
