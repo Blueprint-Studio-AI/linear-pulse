@@ -74,7 +74,7 @@ export function formatLinearEvent(
     case "ProjectUpdate":
       return formatProjectUpdateEvent(payload);
     case "IssueSLA":
-      return formatSLAEvent(payload);
+      return null;
     default:
       return formatGenericEvent(payload);
   }
@@ -98,18 +98,20 @@ function formatIssueEvent(payload: LinearWebhookPayload): FormattedMessage {
   }
 
   if (payload.action === "remove") {
-    return {
-      text: `\ud83d\uddd1 Removed by ${actor}\n${titleLine(title, identifier)}`,
-      url: payload.url,
-      projectId: project?.id,
-    };
+    return null;
   }
 
   const updatedFrom = payload.updatedFrom ?? {};
 
   if ("state" in updatedFrom) {
+    // Only notify for meaningful status transitions
+    const interestingStates = ["unstarted", "started", "completed"];
+    const stateType = state?.type ?? "";
+    if (!interestingStates.includes(stateType)) return null;
+
+    // Map to friendly names: unstarted=Todo, started=In Progress/Review, completed=Done
     const oldState = updatedFrom.state as { name: string; type: string };
-    const emoji = STATUS_EMOJI[state?.type ?? ""] ?? "\ud83d\udd04";
+    const emoji = STATUS_EMOJI[stateType] ?? "\ud83d\udd04";
     return {
       text: `${emoji} ${escapeHtml(oldState.name)} \u2192 ${escapeHtml(state?.name ?? "Unknown")} by ${actor}\n${titleLine(title, identifier)}`,
       url: payload.url,
