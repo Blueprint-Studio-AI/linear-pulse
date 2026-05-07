@@ -7,11 +7,19 @@ export interface FormattedMessage {
 }
 
 const PRIORITY_EMOJI: Record<number, string> = {
-  0: "\u26aa",
+  0: "",
   1: "\ud83d\udd34",
   2: "\ud83d\udfe0",
   3: "\ud83d\udfe1",
   4: "\ud83d\udd35",
+};
+
+const PRIORITY_LABEL: Record<number, string> = {
+  0: "None",
+  1: "Urgent",
+  2: "High",
+  3: "Medium",
+  4: "Low",
 };
 
 const STATUS_EMOJI: Record<string, string> = {
@@ -77,7 +85,9 @@ function formatIssueEvent(payload: LinearWebhookPayload): FormattedMessage {
   const state = getDataField<{ name: string; type: string }>(data, "state");
 
   if (payload.action === "create") {
-    let details = `Priority: ${PRIORITY_EMOJI[priority] ?? "\u26aa"} ${escapeHtml(priorityLabel)}`;
+    const pEmoji = PRIORITY_EMOJI[priority] ?? "";
+    const pLabel = priorityLabel || (PRIORITY_LABEL[priority] ?? "");
+    let details = pEmoji || pLabel ? `Priority: ${pEmoji} ${escapeHtml(pLabel)}`.trim() : "";
     if (project) details += ` \u00b7 Project: ${escapeHtml(project.name)}`;
     if (team) details += ` \u00b7 Team: ${escapeHtml(team.name)}`;
 
@@ -115,7 +125,7 @@ function formatIssueEvent(payload: LinearWebhookPayload): FormattedMessage {
     const assignee = getDataField<{ name: string }>(data, "assignee");
     if (assignee) {
       return {
-        text: `\ud83d\udc64 <b>${identifier} assigned to ${escapeHtml(assignee.name)}</b>\n${title}\nBy: ${actor} \u00b7 Priority: ${PRIORITY_EMOJI[priority] ?? "\u26aa"} ${escapeHtml(priorityLabel)}`,
+        text: `\ud83d\udc64 <b>${identifier} assigned to ${escapeHtml(assignee.name)}</b>\n${title}\nBy: ${actor}${priority > 0 ? ` \u00b7 Priority: ${PRIORITY_EMOJI[priority] ?? ""} ${escapeHtml(priorityLabel || (PRIORITY_LABEL[priority] ?? ""))}`.trim() : ""}`,
         url: payload.url,
         projectId: project?.id,
       };
@@ -131,10 +141,13 @@ function formatIssueEvent(payload: LinearWebhookPayload): FormattedMessage {
   // Priority change
   if ("priority" in updatedFrom) {
     const oldPriority = updatedFrom.priority as number;
-    const oldLabel = (updatedFrom.priorityLabel as string) ?? "None";
+    const oldLabel = PRIORITY_LABEL[oldPriority] ?? "None";
+    const newLabel = PRIORITY_LABEL[priority] ?? priorityLabel;
     const direction = priority < oldPriority ? "escalated" : "lowered";
+    const emoji = PRIORITY_EMOJI[priority] ?? "";
+    const oldEmoji = PRIORITY_EMOJI[oldPriority] ?? "";
     return {
-      text: `${PRIORITY_EMOJI[priority] ?? "\u26aa"} <b>Priority ${direction}</b> on ${identifier}\n${title}\nWas: ${PRIORITY_EMOJI[oldPriority] ?? "\u26aa"} ${escapeHtml(oldLabel)} \u2192 Now: ${PRIORITY_EMOJI[priority] ?? "\u26aa"} ${escapeHtml(priorityLabel)}`,
+      text: `${emoji || "\ud83d\udd04"} <b>Priority ${direction}</b> on ${identifier}\n${title}\nWas: ${oldEmoji} ${escapeHtml(oldLabel)} \u2192 Now: ${emoji} ${escapeHtml(newLabel)}`.replace(/  +/g, " "),
       url: payload.url,
       projectId: project?.id,
     };
