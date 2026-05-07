@@ -88,8 +88,7 @@ function formatIssueEvent(payload: LinearWebhookPayload): FormattedMessage {
     const pEmoji = PRIORITY_EMOJI[priority] ?? "";
     const pLabel = priorityLabel || (PRIORITY_LABEL[priority] ?? "");
     let details = pEmoji || pLabel ? `Priority: ${pEmoji} ${escapeHtml(pLabel)}`.trim() : "";
-    if (project) details += ` \u00b7 Project: ${escapeHtml(project.name)}`;
-    if (team) details += ` \u00b7 Team: ${escapeHtml(team.name)}`;
+    if (project) details += `${details ? " \u00b7 " : ""}Project: ${escapeHtml(project.name)}`;
 
     return {
       text: `\ud83d\udccb <b>New issue</b> by ${actor}\n<b>${identifier}: ${title}</b>\n${details}`,
