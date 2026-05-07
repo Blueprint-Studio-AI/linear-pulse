@@ -1,0 +1,11 @@
+name = "linear-pulse"
+main = "src/index.ts"
+compatibility_date = "2026-05-07"
+
+[[kv_namespaces]]
+binding = "CONFIG"
+id = ""
+preview_id = ""
+
+[vars]
+ENVIRONMENT = "production"
