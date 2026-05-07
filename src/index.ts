@@ -1,6 +1,6 @@
 import { Hono } from "hono";
 import { verifyLinearSignature, isTimestampValid } from "./webhook/verify";
-import { handleTelegramUpdate } from "./webhook/telegram";
+import { handleTelegramUpdate, registerProject } from "./webhook/telegram";
 import { shouldForwardEvent } from "./filters/engine";
 import { formatLinearEvent } from "./telegram/formatter";
 import { TelegramClient } from "./telegram/client";
@@ -89,7 +89,14 @@ async function handleLinearWebhook(c: {
   }
   console.log(`[webhook] Formatted message, sending to Telegram chat ${c.env.TELEGRAM_CHAT_ID}`);
 
-  // 5. Resolve topic
+  // 5. Auto-register project for /projects directory
+  const data = payload.data as Record<string, unknown>;
+  const project = data.project as { id: string; name: string } | undefined;
+  if (project?.id && project?.name) {
+    await registerProject(c.env.CONFIG, project.id, project.name);
+  }
+
+  // 6. Resolve topic
   const telegram = new TelegramClient(c.env.TELEGRAM_BOT_TOKEN);
   const topicRouter = new TopicRouter(
     c.env.CONFIG,
@@ -97,8 +104,6 @@ async function handleLinearWebhook(c: {
     c.env.TELEGRAM_CHAT_ID
   );
 
-  const data = payload.data as Record<string, unknown>;
-  const project = data.project as { id: string; name: string } | undefined;
   let topicId: number | undefined;
   try {
     topicId = await topicRouter.resolveOrCreateTopicId(

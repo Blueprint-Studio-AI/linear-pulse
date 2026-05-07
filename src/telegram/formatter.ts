@@ -80,7 +80,7 @@ export function formatLinearEvent(
   }
 }
 
-function formatIssueEvent(payload: LinearWebhookPayload): FormattedMessage {
+function formatIssueEvent(payload: LinearWebhookPayload): FormattedMessage | null {
   const data = payload.data as Record<string, unknown>;
   const identifier = (data.identifier as string) || "";
   const title = escapeHtml((data.title as string) || "Untitled");
