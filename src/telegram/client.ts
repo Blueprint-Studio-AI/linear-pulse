@@ -35,7 +35,7 @@ export class TelegramClient {
       parse_mode: "HTML",
     };
 
-    if (options.topicId) {
+    if (options.topicId !== undefined) {
       body.message_thread_id = options.topicId;
     }
 

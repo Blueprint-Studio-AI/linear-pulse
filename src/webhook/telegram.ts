@@ -24,6 +24,17 @@ const RESOURCE_TYPES: LinearResourceType[] = [
 ];
 
 const PROJECT_DIRECTORY_KEY = "project_directory";
+const ADMIN_LIST_KEY = "admin_users";
+
+async function getAdminList(kv: KVNamespace): Promise<number[]> {
+  const raw = await kv.get(ADMIN_LIST_KEY);
+  if (!raw) return [];
+  try {
+    return JSON.parse(raw) as number[];
+  } catch {
+    return [];
+  }
+}
 
 interface ProjectEntry {
   id: string;
@@ -55,10 +66,21 @@ export async function handleTelegramUpdate(
   const args = parts.slice(1);
   const chatId = String(msg.chat.id);
   const topicId = msg.message_thread_id;
+  const userId = msg.from?.id;
 
   const reply = async (text: string) => {
     await telegram.sendMessage({ chatId, text, topicId });
   };
+
+  // Admin-only commands that modify config
+  const adminCommands = ["/mute", "/unmute", "/reset", "/track", "/untrack", "/trackall"];
+  if (adminCommands.includes(command)) {
+    const admins = await getAdminList(kv);
+    if (admins.length > 0 && userId && !admins.includes(userId)) {
+      await reply("Only admins can change config.");
+      return;
+    }
+  }
 
   switch (command) {
     case "/help":

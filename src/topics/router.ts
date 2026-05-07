@@ -58,7 +58,11 @@ export class TopicRouter {
   async getTopicConfig(): Promise<TopicConfig> {
     const raw = await this.kv.get(TOPIC_CONFIG_KEY);
     if (!raw) return { topics: {} };
-    return JSON.parse(raw) as TopicConfig;
+    try {
+      return JSON.parse(raw) as TopicConfig;
+    } catch {
+      return { topics: {} };
+    }
   }
 
   private async saveTopicConfig(config: TopicConfig): Promise<void> {

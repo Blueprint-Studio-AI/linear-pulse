@@ -10,16 +10,28 @@ export async function verifyLinearSignature(
       encoder.encode(secret),
       { name: "HMAC", hash: "SHA-256" },
       false,
-      ["sign"]
+      ["sign", "verify"]
     );
-    const sig = await crypto.subtle.sign("HMAC", key, encoder.encode(rawBody));
-    const expected = Array.from(new Uint8Array(sig))
-      .map((b) => b.toString(16).padStart(2, "0"))
-      .join("");
-    return expected === signature;
+
+    // Convert hex signature to Uint8Array for constant-time comparison
+    const sigBytes = hexToBytes(signature);
+    if (!sigBytes) return false;
+
+    return crypto.subtle.verify("HMAC", key, sigBytes, encoder.encode(rawBody));
   } catch {
     return false;
   }
+}
+
+function hexToBytes(hex: string): Uint8Array | null {
+  if (hex.length % 2 !== 0) return null;
+  const bytes = new Uint8Array(hex.length / 2);
+  for (let i = 0; i < hex.length; i += 2) {
+    const byte = parseInt(hex.slice(i, i + 2), 16);
+    if (isNaN(byte)) return null;
+    bytes[i / 2] = byte;
+  }
+  return bytes;
 }
 
 export function isTimestampValid(

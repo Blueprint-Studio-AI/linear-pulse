@@ -9,8 +9,12 @@ export async function loadFilterConfig(
   const raw = await kv.get(FILTER_CONFIG_KEY);
   if (!raw) return DEFAULT_FILTER_CONFIG;
 
-  const overrides = JSON.parse(raw) as Partial<FilterConfig>;
-  return mergeConfig(DEFAULT_FILTER_CONFIG, overrides);
+  try {
+    const overrides = JSON.parse(raw) as Partial<FilterConfig>;
+    return mergeConfig(DEFAULT_FILTER_CONFIG, overrides);
+  } catch {
+    return DEFAULT_FILTER_CONFIG;
+  }
 }
 
 export async function saveFilterConfig(

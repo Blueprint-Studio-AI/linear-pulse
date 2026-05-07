@@ -47,7 +47,8 @@ function getDataField<T>(
   return data[field] as T | undefined;
 }
 
-function titleLine(title: string, identifier: string): string {
+function titleLine(rawTitle: string, identifier: string): string {
+  const title = escapeHtml(rawTitle);
   if (identifier) return `<b>${title}</b> (${identifier})`;
   return `<b>${title}</b>`;
 }
@@ -83,7 +84,7 @@ export function formatLinearEvent(
 function formatIssueEvent(payload: LinearWebhookPayload): FormattedMessage | null {
   const data = payload.data as Record<string, unknown>;
   const identifier = (data.identifier as string) || "";
-  const title = escapeHtml((data.title as string) || "Untitled");
+  const title = (data.title as string) || "Untitled";
   const actor = escapeHtml(firstName(payload));
   const project = getDataField<{ id: string; name: string }>(data, "project");
   const priority = (data.priority as number) ?? 0;
@@ -177,13 +178,13 @@ function formatCommentEvent(payload: LinearWebhookPayload): FormattedMessage {
 
   if (payload.action === "create") {
     return {
-      text: `\ud83d\udcac ${actor} commented${issue ? ` on ${titleLine(escapeHtml(issue.title), issue.identifier)}` : ""}\n\u201c${body}\u201d`,
+      text: `\ud83d\udcac ${actor} commented${issue ? ` on ${titleLine(issue.title, issue.identifier)}` : ""}\n\u201c${body}\u201d`,
       url: payload.url,
     };
   }
 
   return {
-    text: `\ud83d\udcac Comment ${payload.action}d by ${actor}${issue ? `\n${titleLine(escapeHtml(issue.title), issue.identifier)}` : ""}`,
+    text: `\ud83d\udcac Comment ${payload.action}d by ${actor}${issue ? `\n${titleLine(issue.title, issue.identifier)}` : ""}`,
     url: payload.url,
   };
 }
@@ -232,7 +233,7 @@ function formatSLAEvent(payload: LinearWebhookPayload): FormattedMessage {
   };
 
   return {
-    text: `${actionLabels[payload.action] ?? "\u23f1 SLA event"}\n${titleLine(escapeHtml(issue.title), issue.identifier)}`,
+    text: `${actionLabels[payload.action] ?? "\u23f1 SLA event"}\n${titleLine(issue.title, issue.identifier)}`,
     url: payload.url,
   };
 }

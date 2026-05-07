@@ -18,6 +18,7 @@ type Bindings = {
   TELEGRAM_BOT_TOKEN: string;
   TELEGRAM_CHAT_ID: string;
   ADMIN_TOKEN: string;
+  TELEGRAM_WEBHOOK_SECRET: string;
 };
 
 const app = new Hono<{ Bindings: Bindings }>();
@@ -162,6 +163,12 @@ app.post("/", (c) => {
 
 // Telegram bot commands
 app.post("/webhook/telegram", async (c) => {
+  // Verify request came from Telegram
+  const secret = c.req.header("X-Telegram-Bot-Api-Secret-Token");
+  if (secret !== c.env.TELEGRAM_WEBHOOK_SECRET) {
+    return c.json({ error: "unauthorized" }, 401);
+  }
+
   const update = await c.req.json();
   const telegram = new TelegramClient(c.env.TELEGRAM_BOT_TOKEN);
   await handleTelegramUpdate(update, telegram, c.env.CONFIG);
@@ -191,8 +198,19 @@ app.put("/config", async (c) => {
     return c.json({ error: "invalid config" }, 400);
   }
 
+  // Use loadFilterConfig which does deep merge with defaults
   const current = await loadFilterConfig(c.env.CONFIG);
-  const merged = { ...current, ...body };
+  const merged = {
+    events: body.events !== undefined ? { ...current.events, ...body.events } : current.events,
+    scope: {
+      projects: body.scope?.projects ?? current.scope.projects,
+      teams: body.scope?.teams ?? current.scope.teams,
+      labels: body.scope?.labels ?? current.scope.labels,
+    },
+    updates: {
+      ignoreFields: body.updates?.ignoreFields ?? current.updates.ignoreFields,
+    },
+  };
   await saveFilterConfig(c.env.CONFIG, merged);
 
   return c.json({ status: "updated", config: merged });
