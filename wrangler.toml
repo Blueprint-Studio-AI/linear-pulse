@@ -4,8 +4,7 @@ compatibility_date = "2026-05-07"
 
 [[kv_namespaces]]
 binding = "CONFIG"
-id = ""
-preview_id = ""
+id = "8c3e4c8bf3cd434cbf0b1a9fab361443"
 
 [vars]
 ENVIRONMENT = "production"

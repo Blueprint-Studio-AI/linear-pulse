@@ -21,47 +21,72 @@ type Bindings = {
 
 const app = new Hono<{ Bindings: Bindings }>();
 
+// Request logger — runs on every request
+app.use("*", async (c, next) => {
+  console.log(`[linear-pulse] ${c.req.method} ${c.req.path} from ${c.req.header("user-agent") ?? "unknown"}`);
+  await next();
+});
+
 // Health check
 app.get("/health", (c) => c.json({ status: "ok", service: "linear-pulse" }));
 
-// Linear webhook receiver
-app.post("/webhook/linear", async (c) => {
+// Linear webhook handler (shared logic)
+async function handleLinearWebhook(c: {
+  req: { text: () => Promise<string>; header: (name: string) => string | undefined };
+  env: Bindings;
+  json: (data: unknown, status?: number) => Response;
+}): Promise<Response> {
   const rawBody = await c.req.text();
+  console.log(`[webhook] Body length: ${rawBody.length}, Linear-Event: ${c.req.header("Linear-Event") ?? "none"}`);
 
   // 1. Verify signature
   const signature = c.req.header("Linear-Signature") ?? "";
+  if (!signature) {
+    console.log("[webhook] No Linear-Signature header — not a Linear webhook");
+    return c.json({ error: "missing signature" }, 401);
+  }
+
   const isValid = await verifyLinearSignature(
     rawBody,
     signature,
     c.env.LINEAR_WEBHOOK_SECRET
   );
   if (!isValid) {
+    console.log("[webhook] HMAC signature verification FAILED");
     return c.json({ error: "invalid signature" }, 401);
   }
+  console.log("[webhook] Signature verified OK");
 
   // 2. Parse and validate timestamp
   let payload: LinearWebhookPayload;
   try {
     payload = JSON.parse(rawBody) as LinearWebhookPayload;
   } catch {
+    console.log("[webhook] Failed to parse JSON body");
     return c.json({ error: "invalid payload" }, 400);
   }
 
+  console.log(`[webhook] Event: ${payload.type}.${payload.action} by ${payload.actor?.name ?? "unknown"}`);
+
   if (!isTimestampValid(payload.webhookTimestamp)) {
+    console.log(`[webhook] Timestamp drift too large: ${Date.now() - payload.webhookTimestamp}ms`);
     return c.json({ error: "timestamp drift" }, 401);
   }
 
   // 3. Filter
   const config = await loadFilterConfig(c.env.CONFIG);
   if (!shouldForwardEvent(payload, config)) {
+    console.log("[webhook] Event filtered out by config");
     return c.json({ status: "filtered" }, 200);
   }
 
   // 4. Format
   const message = formatLinearEvent(payload);
   if (!message) {
+    console.log("[webhook] No formatter for this event type");
     return c.json({ status: "unformatted" }, 200);
   }
+  console.log(`[webhook] Formatted message, sending to Telegram chat ${c.env.TELEGRAM_CHAT_ID}`);
 
   // 5. Resolve topic
   const telegram = new TelegramClient(c.env.TELEGRAM_BOT_TOKEN);
@@ -73,10 +98,16 @@ app.post("/webhook/linear", async (c) => {
 
   const data = payload.data as Record<string, unknown>;
   const project = data.project as { id: string; name: string } | undefined;
-  const topicId = await topicRouter.resolveOrCreateTopicId(
-    message.projectId ?? project?.id,
-    project?.name
-  );
+  let topicId: number | undefined;
+  try {
+    topicId = await topicRouter.resolveOrCreateTopicId(
+      message.projectId ?? project?.id,
+      project?.name
+    );
+    console.log(`[webhook] Topic resolved: ${topicId ?? "none (main chat)"}`);
+  } catch (e) {
+    console.log(`[webhook] Topic resolution failed: ${(e as Error).message}, sending to main chat`);
+  }
 
   // 6. Send
   const result = await telegram.sendMessage({
@@ -89,10 +120,38 @@ app.post("/webhook/linear", async (c) => {
   });
 
   if (!result.ok) {
-    console.error("Telegram send failed:", result.description);
+    console.error(`[webhook] Telegram send FAILED: ${result.description}`);
+    // If topic-related error, retry without topic
+    if (topicId && result.description?.includes("thread")) {
+      console.log("[webhook] Retrying without topic ID");
+      const retry = await telegram.sendMessage({
+        chatId: c.env.TELEGRAM_CHAT_ID,
+        text: message.text,
+        replyMarkup: {
+          inline_keyboard: [[{ text: "View in Linear", url: message.url }]],
+        },
+      });
+      if (!retry.ok) {
+        console.error(`[webhook] Telegram retry also FAILED: ${retry.description}`);
+      } else {
+        console.log("[webhook] Telegram retry succeeded (without topic)");
+      }
+    }
+  } else {
+    console.log("[webhook] Telegram send OK");
   }
 
   return c.json({ status: "sent" }, 200);
+}
+
+// Accept webhooks at both paths (Linear might hit root or /webhook/linear)
+app.post("/webhook/linear", (c) => handleLinearWebhook(c));
+app.post("/", (c) => {
+  // Only handle as webhook if it has Linear headers
+  if (c.req.header("Linear-Signature") || c.req.header("Linear-Event")) {
+    return handleLinearWebhook(c);
+  }
+  return c.json({ error: "not found" }, 404);
 });
 
 // Admin: get config
