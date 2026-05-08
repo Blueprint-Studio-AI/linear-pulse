@@ -52,6 +52,29 @@ export class TelegramClient {
     return res.json() as Promise<TelegramResponse>;
   }
 
+  async editMessage(
+    chatId: string,
+    messageId: number,
+    text: string,
+    replyMarkup?: TelegramInlineKeyboard
+  ): Promise<TelegramResponse> {
+    const body: Record<string, unknown> = {
+      chat_id: chatId,
+      message_id: messageId,
+      text,
+      parse_mode: "HTML",
+    };
+    if (replyMarkup) {
+      body.reply_markup = replyMarkup;
+    }
+    const res = await fetch(`${this.baseUrl}/editMessageText`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    });
+    return res.json() as Promise<TelegramResponse>;
+  }
+
   async createForumTopic(
     chatId: string,
     name: string

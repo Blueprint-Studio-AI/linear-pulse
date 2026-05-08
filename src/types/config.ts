@@ -23,10 +23,25 @@ export interface TopicConfig {
   topics: Record<string, TopicMapping>;
 }
 
+export interface DisplayConfig {
+  showProject: boolean;
+  showIdentifier: boolean;
+  showActor: boolean;
+  showTransition: boolean; // "Old → New" on status changes
+}
+
+export const DEFAULT_DISPLAY_CONFIG: DisplayConfig = {
+  showProject: true,
+  showIdentifier: true,
+  showActor: true,
+  showTransition: true,
+};
+
 export interface Channel {
   chatId: string;
   name: string;
   filters: FilterConfig;
+  display?: DisplayConfig;
 }
 
 export const DEFAULT_FILTER_CONFIG: FilterConfig = {

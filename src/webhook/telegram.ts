@@ -4,8 +4,8 @@ import {
   saveChannels,
   getChannelByChat,
 } from "../config/loader";
-import { DEFAULT_FILTER_CONFIG } from "../types/config";
-import type { FilterConfig, Channel } from "../types/config";
+import { DEFAULT_FILTER_CONFIG, DEFAULT_DISPLAY_CONFIG } from "../types/config";
+import type { FilterConfig, Channel, DisplayConfig } from "../types/config";
 import type { LinearResourceType } from "../types/linear";
 
 interface TelegramUpdate {
@@ -98,7 +98,7 @@ export async function handleTelegramUpdate(
   };
 
   // Admin-only commands
-  const adminCommands = ["/mute", "/unmute", "/reset", "/track", "/untrack", "/trackall"];
+  const adminCommands = ["/mute", "/unmute", "/reset", "/track", "/untrack", "/trackall", "/show", "/hide"];
   if (adminCommands.includes(command)) {
     const admins = await getAdminList(kv);
     if (admins.length > 0 && userId && !admins.includes(userId)) {
@@ -121,7 +121,12 @@ export async function handleTelegramUpdate(
         "/projects — list tracked projects\n" +
         "/track &lt;name&gt; — only notify for this project\n" +
         "/untrack &lt;name&gt; — stop filtering to this project\n" +
-        "/trackall — notify for all projects"
+        "/trackall — notify for all projects\n\n" +
+        "<b>Display</b>\n" +
+        "/display — current display settings\n" +
+        "/show &lt;field&gt; — show a field in messages\n" +
+        "/hide &lt;field&gt; — hide a field from messages\n" +
+        "Fields: project, identifier, actor, transition"
       );
       break;
 
@@ -311,6 +316,49 @@ export async function handleTelegramUpdate(
         await saveChannels(kv, channels);
       }
       await reply("Filters reset for this chat. All events, all projects.");
+      break;
+    }
+
+    case "/display": {
+      const channels = await loadChannels(kv);
+      const channel = getChannelByChat(channels, chatId);
+      const d = channel?.display ?? DEFAULT_DISPLAY_CONFIG;
+      const fields = [
+        ["project", d.showProject],
+        ["identifier", d.showIdentifier],
+        ["actor", d.showActor],
+        ["transition", d.showTransition],
+      ] as const;
+      const lines = fields.map(
+        ([name, on]) => `${on ? "\u2705" : "\u274c"} ${name}`
+      );
+      await reply(`<b>Display Settings</b>\n\n${lines.join("\n")}`);
+      break;
+    }
+
+    case "/show":
+    case "/hide": {
+      const field = args[0]?.toLowerCase();
+      const fieldMap: Record<string, keyof DisplayConfig> = {
+        project: "showProject",
+        identifier: "showIdentifier",
+        id: "showIdentifier",
+        actor: "showActor",
+        transition: "showTransition",
+      };
+      if (!field || !fieldMap[field]) {
+        await reply("Usage: /show &lt;field&gt; or /hide &lt;field&gt;\nFields: project, identifier, actor, transition");
+        break;
+      }
+      const key = fieldMap[field]!;
+      const value = command === "/show";
+      const { channel, channels } = await ensureChannel(kv, chatId, `Chat ${chatId}`);
+      if (!channel.display) {
+        channel.display = { ...DEFAULT_DISPLAY_CONFIG };
+      }
+      channel.display[key] = value;
+      await saveChannels(kv, channels);
+      await reply(`${value ? "Showing" : "Hiding"} <b>${field}</b> in messages.`);
       break;
     }
 

@@ -1,4 +1,6 @@
 import type { LinearWebhookPayload } from "../types/linear";
+import type { DisplayConfig } from "../types/config";
+import { DEFAULT_DISPLAY_CONFIG } from "../types/config";
 
 export interface FormattedMessage {
   text: string;
@@ -47,41 +49,52 @@ function getDataField<T>(
   return data[field] as T | undefined;
 }
 
-function titleLine(rawTitle: string, identifier: string): string {
+// Display-aware helpers
+function titleLine(rawTitle: string, identifier: string, d: DisplayConfig): string {
   const title = escapeHtml(rawTitle);
-  if (identifier) return `<b>${title}</b> (${identifier})`;
+  if (d.showIdentifier && identifier) return `<b>${title}</b> (${identifier})`;
   return `<b>${title}</b>`;
+}
+
+function byActor(actor: string, d: DisplayConfig): string {
+  return d.showActor ? ` by ${actor}` : "";
 }
 
 function urgentTag(priority: number): string {
   return priority === 1 ? " \ud83d\udd34" : "";
 }
 
-function inProject(project: { name: string } | undefined): string {
-  if (!project) return "";
+function inProject(project: { name: string } | undefined, d: DisplayConfig): string {
+  if (!d.showProject || !project) return "";
   return ` in ${escapeHtml(project.name)}`;
 }
 
 export function formatLinearEvent(
-  payload: LinearWebhookPayload
+  payload: LinearWebhookPayload,
+  display?: DisplayConfig
 ): FormattedMessage | null {
+  const d = display ?? DEFAULT_DISPLAY_CONFIG;
+
   switch (payload.type) {
     case "Issue":
-      return formatIssueEvent(payload);
+      return formatIssueEvent(payload, d);
     case "Comment":
-      return formatCommentEvent(payload);
+      return formatCommentEvent(payload, d);
     case "Project":
-      return formatProjectEvent(payload);
+      return formatProjectEvent(payload, d);
     case "ProjectUpdate":
-      return formatProjectUpdateEvent(payload);
+      return formatProjectUpdateEvent(payload, d);
     case "IssueSLA":
       return null;
     default:
-      return formatGenericEvent(payload);
+      return formatGenericEvent(payload, d);
   }
 }
 
-function formatIssueEvent(payload: LinearWebhookPayload): FormattedMessage | null {
+function formatIssueEvent(
+  payload: LinearWebhookPayload,
+  d: DisplayConfig
+): FormattedMessage | null {
   const data = payload.data as Record<string, unknown>;
   const identifier = (data.identifier as string) || "";
   const title = (data.title as string) || "Untitled";
@@ -92,7 +105,7 @@ function formatIssueEvent(payload: LinearWebhookPayload): FormattedMessage | nul
 
   if (payload.action === "create") {
     return {
-      text: `\ud83d\udccb New issue${inProject(project)} by ${actor}${urgentTag(priority)}\n${titleLine(title, identifier)}`,
+      text: `\ud83d\udccb New issue${inProject(project, d)}${byActor(actor, d)}${urgentTag(priority)}\n${titleLine(title, identifier, d)}`,
       url: payload.url,
       projectId: project?.id,
     };
@@ -105,7 +118,6 @@ function formatIssueEvent(payload: LinearWebhookPayload): FormattedMessage | nul
   const updatedFrom = payload.updatedFrom ?? {};
 
   if ("state" in updatedFrom || "stateId" in updatedFrom) {
-    // Only notify for meaningful status transitions
     const interestingStates = ["unstarted", "started", "completed"];
     const stateType = state?.type ?? "";
     if (!interestingStates.includes(stateType)) return null;
@@ -113,11 +125,14 @@ function formatIssueEvent(payload: LinearWebhookPayload): FormattedMessage | nul
     const oldState = updatedFrom.state as { name: string; type: string } | undefined;
     const oldStateName = oldState?.name;
     const emoji = STATUS_EMOJI[stateType] ?? "\ud83d\udd04";
-    const transition = oldStateName
-      ? `${escapeHtml(oldStateName)} \u2192 ${escapeHtml(state?.name ?? "Unknown")}`
-      : escapeHtml(state?.name ?? "Unknown");
+    let statusText: string;
+    if (d.showTransition && oldStateName) {
+      statusText = `${escapeHtml(oldStateName)} \u2192 ${escapeHtml(state?.name ?? "Unknown")}`;
+    } else {
+      statusText = escapeHtml(state?.name ?? "Unknown");
+    }
     return {
-      text: `${emoji} ${transition} by ${actor}\n${titleLine(title, identifier)}`,
+      text: `${emoji} ${statusText}${byActor(actor, d)}\n${titleLine(title, identifier, d)}`,
       url: payload.url,
       projectId: project?.id,
     };
@@ -128,13 +143,13 @@ function formatIssueEvent(payload: LinearWebhookPayload): FormattedMessage | nul
     if (assignee) {
       const assigneeFirst = assignee.name.split(" ")[0]!;
       return {
-        text: `\ud83d\udc64 Assigned to ${escapeHtml(assigneeFirst)} by ${actor}\n${titleLine(title, identifier)}`,
+        text: `\ud83d\udc64 Assigned to ${escapeHtml(assigneeFirst)}${byActor(actor, d)}\n${titleLine(title, identifier, d)}`,
         url: payload.url,
         projectId: project?.id,
       };
     } else {
       return {
-        text: `\ud83d\udc64 Unassigned by ${actor}\n${titleLine(title, identifier)}`,
+        text: `\ud83d\udc64 Unassigned${byActor(actor, d)}\n${titleLine(title, identifier, d)}`,
         url: payload.url,
         projectId: project?.id,
       };
@@ -147,7 +162,7 @@ function formatIssueEvent(payload: LinearWebhookPayload): FormattedMessage | nul
 
     if (priority === 1) {
       return {
-        text: `\ud83d\udd34 Escalated to Urgent by ${actor}\n${titleLine(title, identifier)}`,
+        text: `\ud83d\udd34 Escalated to Urgent${byActor(actor, d)}\n${titleLine(title, identifier, d)}`,
         url: payload.url,
         projectId: project?.id,
       };
@@ -156,7 +171,7 @@ function formatIssueEvent(payload: LinearWebhookPayload): FormattedMessage | nul
     if (isEscalation) {
       const newLabel = PRIORITY_LABEL[priority] ?? "Unknown";
       return {
-        text: `\u26a1 Priority raised to ${escapeHtml(newLabel)} by ${actor}\n${titleLine(title, identifier)}`,
+        text: `\u26a1 Priority raised to ${escapeHtml(newLabel)}${byActor(actor, d)}\n${titleLine(title, identifier, d)}`,
         url: payload.url,
         projectId: project?.id,
       };
@@ -165,47 +180,51 @@ function formatIssueEvent(payload: LinearWebhookPayload): FormattedMessage | nul
     return null;
   }
 
-  // Generic updates (description, labels, estimate, etc.) — skip them
-  // The specific handlers above cover the changes people actually care about
   return null;
 }
 
-function formatCommentEvent(payload: LinearWebhookPayload): FormattedMessage {
+function formatCommentEvent(
+  payload: LinearWebhookPayload,
+  d: DisplayConfig
+): FormattedMessage {
   const data = payload.data as Record<string, unknown>;
   const actor = escapeHtml(firstName(payload));
-  const issue = getDataField<{ identifier: string; title: string }>(
-    data,
-    "issue"
-  );
+  const issue = getDataField<{ identifier: string; title: string }>(data, "issue");
   const body = truncate(escapeHtml((data.body as string) || ""), 200);
 
   if (payload.action === "create") {
+    const onIssue = issue ? ` on ${titleLine(issue.title, d.showIdentifier ? issue.identifier : "", d)}` : "";
     return {
-      text: `\ud83d\udcac ${actor} commented${issue ? ` on ${titleLine(issue.title, issue.identifier)}` : ""}\n\u201c${body}\u201d`,
+      text: `\ud83d\udcac ${d.showActor ? actor : "New"} commented${onIssue}\n\u201c${body}\u201d`,
       url: payload.url,
     };
   }
 
+  const onIssue = issue ? `\n${titleLine(issue.title, d.showIdentifier ? issue.identifier : "", d)}` : "";
   return {
-    text: `\ud83d\udcac Comment ${payload.action}d by ${actor}${issue ? `\n${titleLine(issue.title, issue.identifier)}` : ""}`,
+    text: `\ud83d\udcac Comment ${payload.action}d${byActor(actor, d)}${onIssue}`,
     url: payload.url,
   };
 }
 
-function formatProjectEvent(payload: LinearWebhookPayload): FormattedMessage {
+function formatProjectEvent(
+  payload: LinearWebhookPayload,
+  d: DisplayConfig
+): FormattedMessage {
   const data = payload.data as Record<string, unknown>;
   const name = escapeHtml((data.name as string) || "Untitled");
   const actor = escapeHtml(firstName(payload));
 
   return {
-    text: `\ud83d\udcc1 Project ${payload.action}d by ${actor}\n<b>${name}</b>`,
+    text: `\ud83d\udcc1 Project ${payload.action}d${byActor(actor, d)}\n<b>${name}</b>`,
     url: payload.url,
     projectId: data.id as string,
   };
 }
 
 function formatProjectUpdateEvent(
-  payload: LinearWebhookPayload
+  payload: LinearWebhookPayload,
+  d: DisplayConfig
 ): FormattedMessage {
   const data = payload.data as Record<string, unknown>;
   const actor = escapeHtml(firstName(payload));
@@ -213,35 +232,16 @@ function formatProjectUpdateEvent(
   const body = truncate(escapeHtml((data.body as string) || ""), 200);
 
   return {
-    text: `\ud83d\udce2 ${actor} posted an update${inProject(project)}\n\u201c${body}\u201d`,
+    text: `\ud83d\udce2 ${d.showActor ? actor : "Update"}${d.showActor ? " posted an update" : ""}${inProject(project, d)}\n\u201c${body}\u201d`,
     url: payload.url,
     projectId: project?.id,
   };
 }
 
-function formatSLAEvent(payload: LinearWebhookPayload): FormattedMessage {
-  const data = payload.data as Record<string, unknown>;
-  const issue = getDataField<{ identifier: string; title: string }>(
-    data,
-    "issue"
-  ) ?? {
-    identifier: (data.identifier as string) ?? "",
-    title: (data.title as string) ?? "",
-  };
-
-  const actionLabels: Record<string, string> = {
-    set: "\u23f1 SLA set",
-    highRisk: "\u26a0\ufe0f SLA at risk",
-    breached: "\ud83d\udea8 SLA breached",
-  };
-
-  return {
-    text: `${actionLabels[payload.action] ?? "\u23f1 SLA event"}\n${titleLine(issue.title, issue.identifier)}`,
-    url: payload.url,
-  };
-}
-
-function formatGenericEvent(payload: LinearWebhookPayload): FormattedMessage {
+function formatGenericEvent(
+  payload: LinearWebhookPayload,
+  d: DisplayConfig
+): FormattedMessage {
   const data = payload.data as Record<string, unknown>;
   const actor = escapeHtml(firstName(payload));
   const name =
@@ -251,7 +251,7 @@ function formatGenericEvent(payload: LinearWebhookPayload): FormattedMessage {
     "";
 
   return {
-    text: `\ud83d\udd14 ${payload.type} ${payload.action}d by ${actor}${name ? `\n<b>${escapeHtml(name)}</b>` : ""}`,
+    text: `\ud83d\udd14 ${payload.type} ${payload.action}d${byActor(actor, d)}${name ? `\n<b>${escapeHtml(name)}</b>` : ""}`,
     url: payload.url,
   };
 }
