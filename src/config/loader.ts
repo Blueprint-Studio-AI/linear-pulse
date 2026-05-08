@@ -1,7 +1,45 @@
-import type { FilterConfig } from "../types/config";
+import type { FilterConfig, Channel } from "../types/config";
 import { DEFAULT_FILTER_CONFIG } from "../types/config";
 
 const FILTER_CONFIG_KEY = "filter_config";
+const CHANNELS_KEY = "channels";
+
+export async function loadChannels(kv: KVNamespace): Promise<Channel[]> {
+  const raw = await kv.get(CHANNELS_KEY);
+  if (!raw) return [];
+  try {
+    return JSON.parse(raw) as Channel[];
+  } catch {
+    return [];
+  }
+}
+
+export async function saveChannels(
+  kv: KVNamespace,
+  channels: Channel[]
+): Promise<void> {
+  await kv.put(CHANNELS_KEY, JSON.stringify(channels));
+}
+
+export function getChannelByChat(
+  channels: Channel[],
+  chatId: string
+): Channel | undefined {
+  return channels.find((c) => c.chatId === chatId);
+}
+
+export async function saveChannelConfig(
+  kv: KVNamespace,
+  chatId: string,
+  filters: FilterConfig
+): Promise<void> {
+  const channels = await loadChannels(kv);
+  const channel = channels.find((c) => c.chatId === chatId);
+  if (channel) {
+    channel.filters = filters;
+    await saveChannels(kv, channels);
+  }
+}
 
 export async function loadFilterConfig(
   kv: KVNamespace

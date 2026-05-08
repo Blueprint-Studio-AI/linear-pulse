@@ -23,6 +23,12 @@ export interface TopicConfig {
   topics: Record<string, TopicMapping>;
 }
 
+export interface Channel {
+  chatId: string;
+  name: string;
+  filters: FilterConfig;
+}
+
 export const DEFAULT_FILTER_CONFIG: FilterConfig = {
   events: {},
   scope: {

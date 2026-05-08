@@ -48,9 +48,12 @@ function passesScopeFilter(
   const { projectId, teamId } = extractScope(data);
 
   if (config.scope.projects.length > 0) {
-    // If we can determine the project, filter by it
-    // If we can't determine it at all, block it (scope is intentional)
-    if (!projectId || !config.scope.projects.includes(projectId)) return false;
+    if (projectId) {
+      // We know the project — check it against the scope
+      if (!config.scope.projects.includes(projectId)) return false;
+    }
+    // If we can't determine the project (e.g. comments), let it through
+    // and rely on team scope to filter instead
   }
 
   if (config.scope.teams.length > 0) {
