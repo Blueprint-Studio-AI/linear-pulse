@@ -21,22 +21,40 @@ function passesEventFilter(
   return allowedActions.includes(payload.action as (typeof allowedActions)[number]);
 }
 
+// Extract project/team from payload, checking nested fields (e.g. comment.issue.project)
+function extractScope(data: Record<string, unknown>): {
+  projectId?: string;
+  teamId?: string;
+} {
+  const project = data.project as { id: string } | undefined;
+  const team = data.team as { id: string } | undefined;
+  const issue = data.issue as Record<string, unknown> | undefined;
+
+  return {
+    projectId:
+      project?.id ??
+      (issue?.project as { id: string } | undefined)?.id,
+    teamId:
+      team?.id ??
+      (issue?.team as { id: string } | undefined)?.id,
+  };
+}
+
 function passesScopeFilter(
   payload: LinearWebhookPayload,
   config: FilterConfig
 ): boolean {
   const data = payload.data as Record<string, unknown>;
+  const { projectId, teamId } = extractScope(data);
 
   if (config.scope.projects.length > 0) {
-    const project = data.project as { id: string } | undefined;
-    // If payload has no project field (comments, etc.), let it through
-    if (project && !config.scope.projects.includes(project.id)) return false;
+    // If we can determine the project, filter by it
+    // If we can't determine it at all, block it (scope is intentional)
+    if (!projectId || !config.scope.projects.includes(projectId)) return false;
   }
 
   if (config.scope.teams.length > 0) {
-    const team = data.team as { id: string } | undefined;
-    // If payload has no team field (comments, project updates, etc.), let it through
-    if (team && !config.scope.teams.includes(team.id)) return false;
+    if (!teamId || !config.scope.teams.includes(teamId)) return false;
   }
 
   if (config.scope.labels.length > 0) {
