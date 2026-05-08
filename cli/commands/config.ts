@@ -1,5 +1,12 @@
 import { PulseAPI } from "../api";
 
+const ALL_ACTIONS = ["create", "update", "remove"];
+const SLA_ACTIONS = ["set", "highRisk", "breached"];
+
+function allActionsFor(resource: string): string[] {
+  return resource === "IssueSLA" ? SLA_ACTIONS : ALL_ACTIONS;
+}
+
 export async function configGet(
   workerUrl: string,
   adminToken: string
@@ -23,11 +30,15 @@ export async function configSet(
     const events = (current.events ?? {}) as Record<string, string[]>;
 
     if (target.includes(".")) {
+      // Disable specific action: Issue.remove
       const [resource, action] = target.split(".");
-      if (resource && action && events[resource]) {
-        events[resource] = events[resource]!.filter((a) => a !== action);
+      if (resource && action) {
+        // If key doesn't exist (all allowed), populate with all actions minus this one
+        const currentActions = events[resource] ?? allActionsFor(resource);
+        events[resource] = currentActions.filter((a) => a !== action);
       }
     } else {
+      // Disable entire resource type
       events[target] = [];
     }
 
@@ -42,12 +53,21 @@ export async function configSet(
     const events = (current.events ?? {}) as Record<string, string[]>;
 
     if (target.includes(".")) {
+      // Enable specific action: Issue.remove
       const [resource, action] = target.split(".");
       if (resource && action) {
-        if (!events[resource]) events[resource] = [];
-        if (!events[resource]!.includes(action)) events[resource]!.push(action);
+        // Only matters if the resource has a restricted list
+        if (events[resource]) {
+          if (!events[resource]!.includes(action)) events[resource]!.push(action);
+          // If all actions are now enabled, remove the key entirely
+          if (allActionsFor(resource).every((a) => events[resource]!.includes(a))) {
+            delete events[resource];
+          }
+        }
+        // If key doesn't exist, all actions already allowed — no-op
       }
     } else {
+      // Enable entire resource type (remove override)
       delete events[target];
     }
 

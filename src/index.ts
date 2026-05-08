@@ -204,7 +204,7 @@ app.put("/config", async (c) => {
   // Use loadFilterConfig which does deep merge with defaults
   const current = await loadFilterConfig(c.env.CONFIG);
   const merged = {
-    events: body.events !== undefined ? { ...current.events, ...body.events } : current.events,
+    events: body.events !== undefined ? body.events : current.events,
     scope: {
       projects: body.scope?.projects ?? current.scope.projects,
       teams: body.scope?.teams ?? current.scope.teams,
