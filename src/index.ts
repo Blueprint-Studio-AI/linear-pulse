@@ -69,6 +69,9 @@ async function handleLinearWebhook(c: {
   }
 
   console.log(`[webhook] Event: ${payload.type}.${payload.action} by ${payload.actor?.name ?? "unknown"}`);
+  if (payload.updatedFrom) {
+    console.log(`[webhook] updatedFrom keys: ${Object.keys(payload.updatedFrom).join(", ")}`);
+  }
 
   if (!isTimestampValid(payload.webhookTimestamp)) {
     console.log(`[webhook] Timestamp drift too large: ${Date.now() - payload.webhookTimestamp}ms`);
