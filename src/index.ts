@@ -2,8 +2,10 @@ import { Hono } from "hono";
 import { verifyLinearSignature, isTimestampValid } from "./webhook/verify";
 import { handleTelegramUpdate, registerProject } from "./webhook/telegram";
 import { shouldForwardEvent } from "./filters/engine";
+import type { ScopeContext } from "./filters/engine";
 import { formatLinearEvent } from "./telegram/formatter";
 import { TelegramClient } from "./telegram/client";
+import { cacheIssueProject, lookupIssueProject } from "./config/project-cache";
 import {
   loadChannels,
   loadFilterConfig,
@@ -109,21 +111,43 @@ async function handleLinearWebhook(c: {
     return c.json({ status: "skipped" }, 200);
   }
 
-  // 4. Auto-register project
+  // 4. Auto-register project + cache issue→project mapping
   const data = payload.data as Record<string, unknown>;
   const project = data.project as { id: string; name: string } | undefined;
   if (project?.id && project?.name) {
     await registerProject(c.env.CONFIG, project.id, project.name);
   }
 
-  // 5. Load channels and route
+  // Cache issue→project for comment routing
+  if (payload.type === "Issue" && project?.id) {
+    const issueId = data.id as string;
+    if (issueId) {
+      await cacheIssueProject(c.env.CONFIG, issueId, project.id);
+    }
+  }
+
+  // 5. Resolve project for events that don't carry it (comments)
+  let scopeContext: ScopeContext = {};
+  if (!project?.id && payload.type === "Comment") {
+    const issue = data.issue as { id?: string } | undefined;
+    if (issue?.id) {
+      const cachedProjectId = await lookupIssueProject(c.env.CONFIG, issue.id);
+      if (cachedProjectId) {
+        scopeContext = { resolvedProjectId: cachedProjectId };
+        console.log(`[webhook] Resolved project from cache: ${cachedProjectId}`);
+      } else {
+        console.log(`[webhook] No cached project for issue ${issue.id}`);
+      }
+    }
+  }
+
+  // 6. Load channels and route
   const channels = await loadChannels(c.env.CONFIG);
   const telegram = new TelegramClient(c.env.TELEGRAM_BOT_TOKEN);
 
   if (channels.length === 0) {
-    // No channels configured — fall back to TELEGRAM_CHAT_ID with global config
     const config = await loadFilterConfig(c.env.CONFIG);
-    if (!shouldForwardEvent(payload, config)) {
+    if (!shouldForwardEvent(payload, config, scopeContext)) {
       console.log("[webhook] Filtered by global config");
       return c.json({ status: "filtered" }, 200);
     }
@@ -134,7 +158,7 @@ async function handleLinearWebhook(c: {
   // Route to each channel that passes its filters
   let sentCount = 0;
   for (const channel of channels) {
-    if (!shouldForwardEvent(payload, channel.filters)) {
+    if (!shouldForwardEvent(payload, channel.filters, scopeContext)) {
       console.log(`[webhook] Filtered for ${channel.name}`);
       continue;
     }

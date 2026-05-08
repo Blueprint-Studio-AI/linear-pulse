@@ -1,12 +1,17 @@
 import type { FilterConfig } from "../types/config";
 import type { LinearWebhookPayload } from "../types/linear";
 
+export interface ScopeContext {
+  resolvedProjectId?: string;
+}
+
 export function shouldForwardEvent(
   payload: LinearWebhookPayload,
-  config: FilterConfig
+  config: FilterConfig,
+  scope?: ScopeContext
 ): boolean {
   if (!passesEventFilter(payload, config)) return false;
-  if (!passesScopeFilter(payload, config)) return false;
+  if (!passesScopeFilter(payload, config, scope)) return false;
   if (!passesFieldFilter(payload, config)) return false;
   return true;
 }
@@ -21,7 +26,6 @@ function passesEventFilter(
   return allowedActions.includes(payload.action as (typeof allowedActions)[number]);
 }
 
-// Extract project/team from payload, checking nested fields (e.g. comment.issue.project)
 function extractScope(data: Record<string, unknown>): {
   projectId?: string;
   teamId?: string;
@@ -42,18 +46,17 @@ function extractScope(data: Record<string, unknown>): {
 
 function passesScopeFilter(
   payload: LinearWebhookPayload,
-  config: FilterConfig
+  config: FilterConfig,
+  scope?: ScopeContext
 ): boolean {
   const data = payload.data as Record<string, unknown>;
-  const { projectId, teamId } = extractScope(data);
+  const extracted = extractScope(data);
+  // Use cached project ID if the payload doesn't have one
+  const projectId = extracted.projectId ?? scope?.resolvedProjectId;
+  const teamId = extracted.teamId;
 
   if (config.scope.projects.length > 0) {
-    if (projectId) {
-      // We know the project — check it against the scope
-      if (!config.scope.projects.includes(projectId)) return false;
-    }
-    // If we can't determine the project (e.g. comments), let it through
-    // and rely on team scope to filter instead
+    if (!projectId || !config.scope.projects.includes(projectId)) return false;
   }
 
   if (config.scope.teams.length > 0) {
