@@ -29,12 +29,14 @@ function passesScopeFilter(
 
   if (config.scope.projects.length > 0) {
     const project = data.project as { id: string } | undefined;
-    if (!project || !config.scope.projects.includes(project.id)) return false;
+    // If payload has no project field (comments, etc.), let it through
+    if (project && !config.scope.projects.includes(project.id)) return false;
   }
 
   if (config.scope.teams.length > 0) {
     const team = data.team as { id: string } | undefined;
-    if (!team || !config.scope.teams.includes(team.id)) return false;
+    // If payload has no team field (comments, project updates, etc.), let it through
+    if (team && !config.scope.teams.includes(team.id)) return false;
   }
 
   if (config.scope.labels.length > 0) {
