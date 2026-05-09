@@ -1,7 +1,8 @@
 import { TelegramClient, TelegramInlineKeyboard } from "./client";
 
 const BATCH_PREFIX = "batch:";
-const BATCH_WINDOW_SECONDS = 5;
+const BATCH_WINDOW_SECONDS = 30; // KV minimum TTL is 60s, so window must be >= 30
+const BATCH_TTL_SECONDS = 60; // KV minimum
 
 interface BatchEntry {
   messageId: number;
@@ -58,7 +59,7 @@ export async function sendOrBatch(
 
       // Update the count in KV
       await kv.put(key, JSON.stringify(batch), {
-        expirationTtl: BATCH_WINDOW_SECONDS * 2,
+        expirationTtl: BATCH_TTL_SECONDS,
       });
       return true;
     } catch {
@@ -91,7 +92,7 @@ export async function sendOrBatch(
       url: opts.url,
     };
     await kv.put(key, JSON.stringify(entry), {
-      expirationTtl: BATCH_WINDOW_SECONDS * 2,
+      expirationTtl: BATCH_TTL_SECONDS,
     });
   }
 

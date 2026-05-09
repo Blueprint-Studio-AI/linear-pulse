@@ -80,14 +80,21 @@ export function formatLinearEvent(
       return formatIssueEvent(payload, d);
     case "Comment":
       return formatCommentEvent(payload, d);
-    case "Project":
-      return formatProjectEvent(payload, d);
     case "ProjectUpdate":
       return formatProjectUpdateEvent(payload, d);
+    // Suppress noise: label changes, project metadata edits, reactions, etc.
+    case "Project":
+    case "IssueLabel":
     case "IssueSLA":
+    case "Reaction":
+    case "Cycle":
+    case "Document":
+    case "User":
+    case "Customer":
+    case "CustomerRequest":
       return null;
     default:
-      return formatGenericEvent(payload, d);
+      return null;
   }
 }
 
