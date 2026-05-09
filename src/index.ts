@@ -5,7 +5,6 @@ import { shouldForwardEvent } from "./filters/engine";
 import type { ScopeContext } from "./filters/engine";
 import { formatLinearEvent } from "./telegram/formatter";
 import { TelegramClient } from "./telegram/client";
-import { sendOrBatch } from "./telegram/batcher";
 import { cacheIssueProject, lookupIssueProject } from "./config/project-cache";
 import {
   loadChannels,
@@ -145,12 +144,6 @@ async function handleLinearWebhook(c: {
   // 6. Load channels and route
   const channels = await loadChannels(c.env.CONFIG);
   const telegram = new TelegramClient(c.env.TELEGRAM_BOT_TOKEN);
-  const actorName = payload.actor?.name?.split(" ")[0] ?? "unknown";
-  const batchAction = `${payload.type}.${payload.action}`;
-  const eventTitle = (data.title as string) || (data.name as string) || "";
-  const replyMarkup = {
-    inline_keyboard: [[{ text: "View in Linear", url: testMessage.url }]],
-  };
 
   if (channels.length === 0) {
     const config = await loadFilterConfig(c.env.CONFIG);
@@ -158,15 +151,7 @@ async function handleLinearWebhook(c: {
       console.log("[webhook] Filtered by global config");
       return c.json({ status: "filtered" }, 200);
     }
-    await sendOrBatch(c.env.CONFIG, telegram, {
-      chatId: c.env.TELEGRAM_CHAT_ID,
-      text: testMessage.text,
-      url: testMessage.url,
-      actor: actorName,
-      action: batchAction,
-      title: eventTitle,
-      replyMarkup,
-    });
+    await sendToChat(telegram, c.env.TELEGRAM_CHAT_ID, testMessage.text, testMessage.url);
     return c.json({ status: "sent" }, 200);
   }
 
@@ -179,17 +164,7 @@ async function handleLinearWebhook(c: {
     }
     const msg = formatLinearEvent(payload, channel.display);
     if (!msg) continue;
-    await sendOrBatch(c.env.CONFIG, telegram, {
-      chatId: channel.chatId,
-      text: msg.text,
-      url: msg.url,
-      actor: actorName,
-      action: batchAction,
-      title: eventTitle,
-      replyMarkup: {
-        inline_keyboard: [[{ text: "View in Linear", url: msg.url }]],
-      },
-    });
+    await sendToChat(telegram, channel.chatId, msg.text, msg.url);
     sentCount++;
   }
 
