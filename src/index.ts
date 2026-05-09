@@ -63,6 +63,7 @@ async function handleLinearWebhook(c: {
   env: Bindings;
   json: (data: unknown, status?: number) => Response;
 }): Promise<Response> {
+  const handlerStart = Date.now();
   const rawBody = await c.req.text();
 
   // 1. Verify signature
@@ -89,7 +90,8 @@ async function handleLinearWebhook(c: {
     return c.json({ error: "invalid payload" }, 400);
   }
 
-  console.log(`[webhook] ${payload.type}.${payload.action} by ${payload.actor?.name ?? "unknown"}`);
+  const linearDelay = handlerStart - payload.webhookTimestamp;
+  console.log(`[webhook] ${payload.type}.${payload.action} by ${payload.actor?.name ?? "unknown"} | Linear→Worker: ${linearDelay}ms`);
   if (payload.updatedFrom) {
     console.log(`[webhook] updatedFrom: ${Object.keys(payload.updatedFrom).join(", ")}`);
   }
@@ -168,7 +170,8 @@ async function handleLinearWebhook(c: {
     sentCount++;
   }
 
-  console.log(`[webhook] Sent to ${sentCount}/${channels.length} channels`);
+  const totalMs = Date.now() - handlerStart;
+  console.log(`[webhook] Sent to ${sentCount}/${channels.length} channels | Worker total: ${totalMs}ms`);
   return c.json({ status: "sent", channels: sentCount }, 200);
 }
 
