@@ -1,6 +1,12 @@
 import type { LinearWebhookPayload } from "../types/linear";
 import type { DisplayConfig } from "../types/config";
 import { DEFAULT_DISPLAY_CONFIG } from "../types/config";
+import { escapeHtml, truncate } from "./html";
+
+// Facts the worker looked up that aren't in the payload itself
+export interface FormatContext {
+  previousStateName?: string;
+}
 
 export interface FormattedMessage {
   text: string;
@@ -24,18 +30,6 @@ const STATUS_EMOJI: Record<string, string> = {
   canceled: "\ud83d\udeab",
   triage: "\ud83d\udccb",
 };
-
-function escapeHtml(text: string): string {
-  return text
-    .replace(/&/g, "&amp;")
-    .replace(/</g, "&lt;")
-    .replace(/>/g, "&gt;");
-}
-
-function truncate(text: string, maxLength: number = 200): string {
-  if (text.length <= maxLength) return text;
-  return text.slice(0, maxLength).trimEnd() + "...";
-}
 
 function firstName(payload: LinearWebhookPayload): string {
   const name = payload.actor?.name ?? "Someone";
@@ -71,13 +65,15 @@ function inProject(project: { name: string } | undefined, d: DisplayConfig): str
 
 export function formatLinearEvent(
   payload: LinearWebhookPayload,
-  display?: DisplayConfig
+  display?: Partial<DisplayConfig>,
+  context: FormatContext = {}
 ): FormattedMessage | null {
-  const d = display ?? DEFAULT_DISPLAY_CONFIG;
+  // Fill keys missing from display configs saved before newer toggles existed
+  const d = { ...DEFAULT_DISPLAY_CONFIG, ...display };
 
   switch (payload.type) {
     case "Issue":
-      return formatIssueEvent(payload, d);
+      return formatIssueEvent(payload, d, context);
     case "Comment":
       return formatCommentEvent(payload, d);
     case "ProjectUpdate":
@@ -100,7 +96,8 @@ export function formatLinearEvent(
 
 function formatIssueEvent(
   payload: LinearWebhookPayload,
-  d: DisplayConfig
+  d: DisplayConfig,
+  context: FormatContext
 ): FormattedMessage | null {
   const data = payload.data as Record<string, unknown>;
   const identifier = (data.identifier as string) || "";
@@ -130,7 +127,7 @@ function formatIssueEvent(
     if (!interestingStates.includes(stateType)) return null;
 
     const oldState = updatedFrom.state as { name: string; type: string } | undefined;
-    const oldStateName = oldState?.name;
+    const oldStateName = oldState?.name ?? context.previousStateName;
     const emoji = STATUS_EMOJI[stateType] ?? "\ud83d\udd04";
     let statusText: string;
     if (d.showTransition && oldStateName) {
@@ -148,6 +145,7 @@ function formatIssueEvent(
   if ("assignee" in updatedFrom || "assigneeId" in updatedFrom) {
     const assignee = getDataField<{ name: string }>(data, "assignee");
     if (assignee) {
+      if (!d.showAssignments) return null;
       const assigneeFirst = assignee.name.split(" ")[0]!;
       return {
         text: `\ud83d\udc64 Assigned to ${escapeHtml(assigneeFirst)}${byActor(actor, d)}\n${titleLine(title, identifier, d)}`,
@@ -155,6 +153,7 @@ function formatIssueEvent(
         projectId: project?.id,
       };
     } else {
+      if (!d.showUnassignments) return null;
       return {
         text: `\ud83d\udc64 Unassigned${byActor(actor, d)}\n${titleLine(title, identifier, d)}`,
         url: payload.url,
@@ -197,12 +196,13 @@ function formatCommentEvent(
   const data = payload.data as Record<string, unknown>;
   const actor = escapeHtml(firstName(payload));
   const issue = getDataField<{ identifier: string; title: string }>(data, "issue");
-  const body = truncate(escapeHtml((data.body as string) || ""), 200);
+  const body = escapeHtml(truncate((data.body as string) || "", 200));
 
   if (payload.action === "create") {
     const onIssue = issue ? ` on ${titleLine(issue.title, d.showIdentifier ? issue.identifier : "", d)}` : "";
+    const lead = d.showActor ? `${actor} commented` : "New comment";
     return {
-      text: `\ud83d\udcac ${d.showActor ? actor : "New"} commented${onIssue}\n\u201c${body}\u201d`,
+      text: `\ud83d\udcac ${lead}${onIssue}\n\u201c${body}\u201d`,
       url: payload.url,
     };
   }
@@ -214,21 +214,6 @@ function formatCommentEvent(
   };
 }
 
-function formatProjectEvent(
-  payload: LinearWebhookPayload,
-  d: DisplayConfig
-): FormattedMessage {
-  const data = payload.data as Record<string, unknown>;
-  const name = escapeHtml((data.name as string) || "Untitled");
-  const actor = escapeHtml(firstName(payload));
-
-  return {
-    text: `\ud83d\udcc1 Project ${payload.action}d${byActor(actor, d)}\n<b>${name}</b>`,
-    url: payload.url,
-    projectId: data.id as string,
-  };
-}
-
 function formatProjectUpdateEvent(
   payload: LinearWebhookPayload,
   d: DisplayConfig
@@ -236,29 +221,11 @@ function formatProjectUpdateEvent(
   const data = payload.data as Record<string, unknown>;
   const actor = escapeHtml(firstName(payload));
   const project = getDataField<{ id: string; name: string }>(data, "project");
-  const body = truncate(escapeHtml((data.body as string) || ""), 200);
+  const body = escapeHtml(truncate((data.body as string) || "", 200));
 
   return {
     text: `\ud83d\udce2 ${d.showActor ? actor : "Update"}${d.showActor ? " posted an update" : ""}${inProject(project, d)}\n\u201c${body}\u201d`,
     url: payload.url,
     projectId: project?.id,
-  };
-}
-
-function formatGenericEvent(
-  payload: LinearWebhookPayload,
-  d: DisplayConfig
-): FormattedMessage {
-  const data = payload.data as Record<string, unknown>;
-  const actor = escapeHtml(firstName(payload));
-  const name =
-    (data.name as string) ||
-    (data.title as string) ||
-    (data.identifier as string) ||
-    "";
-
-  return {
-    text: `\ud83d\udd14 ${payload.type} ${payload.action}d${byActor(actor, d)}${name ? `\n<b>${escapeHtml(name)}</b>` : ""}`,
-    url: payload.url,
   };
 }

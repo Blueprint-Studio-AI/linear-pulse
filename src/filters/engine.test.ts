@@ -1,6 +1,6 @@
 import { describe, it, expect } from "vitest";
 import { shouldForwardEvent } from "./engine";
-import { DEFAULT_FILTER_CONFIG } from "../types/config";
+import { defaultFilterConfig } from "../types/config";
 import type { LinearWebhookPayload } from "../types/linear";
 import type { FilterConfig } from "../types/config";
 
@@ -29,12 +29,12 @@ function makePayload(
 
 describe("shouldForwardEvent", () => {
   it("forwards all events with default config", () => {
-    expect(shouldForwardEvent(makePayload(), DEFAULT_FILTER_CONFIG)).toBe(true);
+    expect(shouldForwardEvent(makePayload(), defaultFilterConfig())).toBe(true);
   });
 
   it("blocks a disabled resource type", () => {
     const config: FilterConfig = {
-      ...DEFAULT_FILTER_CONFIG,
+      ...defaultFilterConfig(),
       events: { Issue: [] },
     };
     expect(shouldForwardEvent(makePayload(), config)).toBe(false);
@@ -42,7 +42,7 @@ describe("shouldForwardEvent", () => {
 
   it("blocks a disabled action", () => {
     const config: FilterConfig = {
-      ...DEFAULT_FILTER_CONFIG,
+      ...defaultFilterConfig(),
       events: { Issue: ["create"] },
     };
     expect(shouldForwardEvent(makePayload({ action: "update" }), config)).toBe(
@@ -52,7 +52,7 @@ describe("shouldForwardEvent", () => {
 
   it("allows a permitted action", () => {
     const config: FilterConfig = {
-      ...DEFAULT_FILTER_CONFIG,
+      ...defaultFilterConfig(),
       events: { Issue: ["create", "update"] },
     };
     expect(
@@ -62,24 +62,24 @@ describe("shouldForwardEvent", () => {
 
   it("filters by project scope", () => {
     const config: FilterConfig = {
-      ...DEFAULT_FILTER_CONFIG,
-      scope: { ...DEFAULT_FILTER_CONFIG.scope, projects: ["proj-other"] },
+      ...defaultFilterConfig(),
+      scope: { ...defaultFilterConfig().scope, projects: ["proj-other"] },
     };
     expect(shouldForwardEvent(makePayload(), config)).toBe(false);
   });
 
   it("allows matching project scope", () => {
     const config: FilterConfig = {
-      ...DEFAULT_FILTER_CONFIG,
-      scope: { ...DEFAULT_FILTER_CONFIG.scope, projects: ["proj-1"] },
+      ...defaultFilterConfig(),
+      scope: { ...defaultFilterConfig().scope, projects: ["proj-1"] },
     };
     expect(shouldForwardEvent(makePayload(), config)).toBe(true);
   });
 
   it("filters by team scope", () => {
     const config: FilterConfig = {
-      ...DEFAULT_FILTER_CONFIG,
-      scope: { ...DEFAULT_FILTER_CONFIG.scope, teams: ["team-other"] },
+      ...defaultFilterConfig(),
+      scope: { ...defaultFilterConfig().scope, teams: ["team-other"] },
     };
     expect(shouldForwardEvent(makePayload(), config)).toBe(false);
   });
@@ -89,7 +89,7 @@ describe("shouldForwardEvent", () => {
       action: "update",
       updatedFrom: { sortOrder: 1.5 },
     });
-    expect(shouldForwardEvent(payload, DEFAULT_FILTER_CONFIG)).toBe(false);
+    expect(shouldForwardEvent(payload, defaultFilterConfig())).toBe(false);
   });
 
   it("allows updates with meaningful field changes", () => {
@@ -97,6 +97,21 @@ describe("shouldForwardEvent", () => {
       action: "update",
       updatedFrom: { sortOrder: 1.5, state: { name: "Todo" } },
     });
-    expect(shouldForwardEvent(payload, DEFAULT_FILTER_CONFIG)).toBe(true);
+    expect(shouldForwardEvent(payload, defaultFilterConfig())).toBe(true);
+  });
+
+  it("uses the cached project for comments that don't carry one", () => {
+    const config: FilterConfig = {
+      ...defaultFilterConfig(),
+      scope: { ...defaultFilterConfig().scope, projects: ["proj-1"] },
+    };
+    const comment = makePayload({
+      type: "Comment",
+      data: { id: "c1", body: "hi", issueId: "issue-1" },
+    });
+    expect(shouldForwardEvent(comment, config)).toBe(false);
+    expect(
+      shouldForwardEvent(comment, config, { resolvedProjectId: "proj-1" })
+    ).toBe(true);
   });
 });

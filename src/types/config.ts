@@ -14,20 +14,13 @@ export interface FilterConfig {
   };
 }
 
-export interface TopicMapping {
-  topicId: number;
-  name: string;
-}
-
-export interface TopicConfig {
-  topics: Record<string, TopicMapping>;
-}
-
 export interface DisplayConfig {
   showProject: boolean;
   showIdentifier: boolean;
   showActor: boolean;
   showTransition: boolean; // "Old → New" on status changes
+  showAssignments: boolean;
+  showUnassignments: boolean;
 }
 
 export const DEFAULT_DISPLAY_CONFIG: DisplayConfig = {
@@ -35,6 +28,8 @@ export const DEFAULT_DISPLAY_CONFIG: DisplayConfig = {
   showIdentifier: true,
   showActor: true,
   showTransition: true,
+  showAssignments: true,
+  showUnassignments: true,
 };
 
 export interface Channel {
@@ -44,14 +39,18 @@ export interface Channel {
   display?: DisplayConfig;
 }
 
-export const DEFAULT_FILTER_CONFIG: FilterConfig = {
-  events: {},
-  scope: {
-    projects: [],
-    teams: [],
-    labels: [],
-  },
-  updates: {
-    ignoreFields: ["sortOrder", "boardOrder", "subscriberIds", "trashed"],
-  },
-};
+// Returns a fresh object each call. Channels mutate their filters in place,
+// so a shared default would leak one chat's settings into the next.
+export function defaultFilterConfig(): FilterConfig {
+  return {
+    events: {},
+    scope: {
+      projects: [],
+      teams: [],
+      labels: [],
+    },
+    updates: {
+      ignoreFields: ["sortOrder", "boardOrder", "subscriberIds", "trashed"],
+    },
+  };
+}

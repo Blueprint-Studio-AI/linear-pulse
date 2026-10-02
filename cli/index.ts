@@ -65,7 +65,7 @@ async function main() {
       console.log("  config get             View current filter config");
       console.log("  config set             Update filters");
       console.log("  config reset           Reset to defaults");
-      console.log("  status                 Worker health + topic mappings");
+      console.log("  status                 Worker health + channel configs");
       console.log("\nEnv vars:");
       console.log("  TELEGRAM_BOT_TOKEN     Telegram bot token");
       console.log(

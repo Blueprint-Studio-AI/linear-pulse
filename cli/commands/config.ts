@@ -7,6 +7,18 @@ function allActionsFor(resource: string): string[] {
   return resource === "IssueSLA" ? SLA_ACTIONS : ALL_ACTIONS;
 }
 
+// The global config only routes events while no chat has its own channel
+// config; once one exists, each chat's own filters apply instead.
+async function warnIfChannelsOverride(api: PulseAPI): Promise<void> {
+  const channels = await api.getChannels();
+  if (Array.isArray(channels) && channels.length > 0) {
+    console.warn(
+      `Note: ${channels.length} chat(s) have their own config, so this global config is not used for routing. ` +
+      "Change filters with Telegram commands in each chat instead."
+    );
+  }
+}
+
 export async function configGet(
   workerUrl: string,
   adminToken: string
@@ -14,6 +26,7 @@ export async function configGet(
   const api = new PulseAPI(workerUrl, adminToken);
   const config = await api.getConfig();
   console.log(JSON.stringify(config, null, 2));
+  await warnIfChannelsOverride(api);
 }
 
 export async function configSet(
@@ -44,6 +57,7 @@ export async function configSet(
 
     const result = await api.updateConfig({ events });
     console.log(JSON.stringify(result, null, 2));
+    await warnIfChannelsOverride(api);
     return;
   }
 
@@ -73,6 +87,7 @@ export async function configSet(
 
     const result = await api.updateConfig({ events });
     console.log(JSON.stringify(result, null, 2));
+    await warnIfChannelsOverride(api);
     return;
   }
 
@@ -98,4 +113,5 @@ export async function configReset(
   });
   console.log("Config reset to defaults.");
   console.log(JSON.stringify(result, null, 2));
+  await warnIfChannelsOverride(api);
 }

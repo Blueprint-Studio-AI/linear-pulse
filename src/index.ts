@@ -1,11 +1,14 @@
 import { Hono } from "hono";
-import { verifyLinearSignature, isTimestampValid } from "./webhook/verify";
+import type { Context } from "hono";
+import { verifyLinearSignature, isTimestampValid, secretMatches } from "./webhook/verify";
 import { handleTelegramUpdate, registerProject } from "./webhook/telegram";
 import { shouldForwardEvent } from "./filters/engine";
 import type { ScopeContext } from "./filters/engine";
 import { formatLinearEvent } from "./telegram/formatter";
+import type { FormatContext } from "./telegram/formatter";
 import { TelegramClient } from "./telegram/client";
 import { cacheIssueProject, lookupIssueProject } from "./config/project-cache";
+import { cacheStateName, lookupStateName } from "./config/state-cache";
 import {
   loadChannels,
   loadFilterConfig,
@@ -13,7 +16,6 @@ import {
   validateFilterConfig,
 } from "./config/loader";
 import type { LinearWebhookPayload } from "./types/linear";
-import type { Channel } from "./types/config";
 
 type Bindings = {
   CONFIG: KVNamespace;
@@ -23,6 +25,8 @@ type Bindings = {
   ADMIN_TOKEN: string;
   TELEGRAM_WEBHOOK_SECRET: string;
 };
+
+type AppContext = Context<{ Bindings: Bindings }>;
 
 const app = new Hono<{ Bindings: Bindings }>();
 
@@ -35,34 +39,42 @@ app.use("*", async (c, next) => {
 // Health check
 app.get("/health", (c) => c.json({ status: "ok", service: "linear-pulse" }));
 
-// Send a formatted message to a specific chat
+function isAdminRequest(c: AppContext): boolean {
+  const header = c.req.header("Authorization");
+  const token = header?.startsWith("Bearer ") ? header.slice("Bearer ".length) : undefined;
+  return secretMatches(token, c.env.ADMIN_TOKEN);
+}
+
+// Send a formatted message to a specific chat. Never throws, so one failing
+// chat can't stop delivery to the others.
 async function sendToChat(
   telegram: TelegramClient,
   chatId: string,
   text: string,
   url: string
-): Promise<void> {
-  const result = await telegram.sendMessage({
-    chatId,
-    text,
-    replyMarkup: {
-      inline_keyboard: [[{ text: "View in Linear", url }]],
-    },
-  });
-
-  if (!result.ok) {
-    console.error(`[send] Failed to ${chatId}: ${result.description}`);
-  } else {
+): Promise<boolean> {
+  try {
+    const result = await telegram.sendMessage({
+      chatId,
+      text,
+      replyMarkup: {
+        inline_keyboard: [[{ text: "View in Linear", url }]],
+      },
+    });
+    if (!result.ok) {
+      console.error(`[send] Failed to ${chatId}: ${result.description}`);
+      return false;
+    }
     console.log(`[send] OK to ${chatId}`);
+    return true;
+  } catch (e) {
+    console.error(`[send] Failed to ${chatId}: ${(e as Error).message}`);
+    return false;
   }
 }
 
 // Linear webhook handler
-async function handleLinearWebhook(c: {
-  req: { text: () => Promise<string>; header: (name: string) => string | undefined };
-  env: Bindings;
-  json: (data: unknown, status?: number) => Response;
-}): Promise<Response> {
+async function handleLinearWebhook(c: AppContext): Promise<Response> {
   const handlerStart = Date.now();
   const rawBody = await c.req.text();
 
@@ -90,89 +102,97 @@ async function handleLinearWebhook(c: {
     return c.json({ error: "invalid payload" }, 400);
   }
 
-  const linearDelay = handlerStart - payload.webhookTimestamp;
-  console.log(`[webhook] ${payload.type}.${payload.action} by ${payload.actor?.name ?? "unknown"} | Linear→Worker: ${linearDelay}ms`);
-  if (payload.updatedFrom) {
-    console.log(`[webhook] updatedFrom: ${Object.keys(payload.updatedFrom).join(", ")}`);
-  }
-  // Debug: log scope-relevant fields
-  const debugData = payload.data as Record<string, unknown>;
-  const debugProject = debugData.project as { id: string } | undefined;
-  const debugIssue = debugData.issue as Record<string, unknown> | undefined;
-  const debugIssueProject = debugIssue?.project as { id: string } | undefined;
-  console.log(`[webhook] project: ${debugProject?.id ?? "none"}, issue.project: ${debugIssueProject?.id ?? "none"}, issue keys: ${debugIssue ? Object.keys(debugIssue).join(",") : "n/a"}`);
-
   if (!isTimestampValid(payload.webhookTimestamp)) {
     return c.json({ error: "timestamp drift" }, 401);
   }
 
-  // 3. Quick check: does this event type produce a notification at all?
-  const testMessage = formatLinearEvent(payload);
-  if (!testMessage) {
-    console.log("[webhook] No notification for this event");
-    return c.json({ status: "skipped" }, 200);
-  }
+  const linearDelay = handlerStart - payload.webhookTimestamp;
+  const changed = payload.updatedFrom ? ` | changed: ${Object.keys(payload.updatedFrom).join(", ")}` : "";
+  console.log(`[webhook] ${payload.type}.${payload.action} by ${payload.actor?.name ?? "unknown"} | Linear→Worker: ${linearDelay}ms${changed}`);
 
-  // 4. Auto-register project + cache issue→project mapping
+  // 3. Keep the project directory and issue→project cache current. This runs
+  // for every event, including ones that don't notify, so comments on quiet
+  // issues can still be routed to the right project.
   const data = payload.data as Record<string, unknown>;
   const project = data.project as { id: string; name: string } | undefined;
   if (project?.id && project?.name) {
     await registerProject(c.env.CONFIG, project.id, project.name);
   }
 
-  // Cache issue→project for comment routing
-  if (payload.type === "Issue" && project?.id) {
-    const issueId = data.id as string;
-    if (issueId) {
-      await cacheIssueProject(c.env.CONFIG, issueId, project.id);
+  const formatContext: FormatContext = {};
+  if (payload.type === "Issue") {
+    const issueId = data.id as string | undefined;
+    const projectId = project?.id ?? (data.projectId as string | undefined);
+    if (issueId && projectId) {
+      await cacheIssueProject(c.env.CONFIG, issueId, projectId);
     }
+
+    // Status changes only carry the old stateId, so remember state names
+    // as they go by and look the old one up.
+    const state = data.state as { id?: string; name?: string } | undefined;
+    if (state?.id && state.name) {
+      await cacheStateName(c.env.CONFIG, state.id, state.name);
+    }
+    const oldStateId = payload.updatedFrom?.stateId as string | undefined;
+    if (oldStateId) {
+      formatContext.previousStateName =
+        (await lookupStateName(c.env.CONFIG, oldStateId)) ?? undefined;
+    }
+  }
+
+  // 4. Quick check: does this event type produce a notification at all?
+  const testMessage = formatLinearEvent(payload, undefined, formatContext);
+  if (!testMessage) {
+    return c.json({ status: "skipped" }, 200);
   }
 
   // 5. Resolve project for events that don't carry it (comments)
   let scopeContext: ScopeContext = {};
   if (!project?.id && payload.type === "Comment") {
-    const issue = data.issue as { id?: string } | undefined;
-    if (issue?.id) {
-      const cachedProjectId = await lookupIssueProject(c.env.CONFIG, issue.id);
+    const issueId =
+      (data.issue as { id?: string } | undefined)?.id ??
+      (data.issueId as string | undefined);
+    if (issueId) {
+      const cachedProjectId = await lookupIssueProject(c.env.CONFIG, issueId);
       if (cachedProjectId) {
         scopeContext = { resolvedProjectId: cachedProjectId };
-        console.log(`[webhook] Resolved project from cache: ${cachedProjectId}`);
       } else {
-        console.log(`[webhook] No cached project for issue ${issue.id}`);
+        console.log(`[webhook] No cached project for issue ${issueId}`);
       }
     }
   }
 
-  // 6. Load channels and route
+  // 6. Work out which chats get it, formatting per-channel
   const channels = await loadChannels(c.env.CONFIG);
-  const telegram = new TelegramClient(c.env.TELEGRAM_BOT_TOKEN);
+  const deliveries: Array<{ chatId: string; text: string; url: string }> = [];
 
   if (channels.length === 0) {
     const config = await loadFilterConfig(c.env.CONFIG);
     if (!shouldForwardEvent(payload, config, scopeContext)) {
-      console.log("[webhook] Filtered by global config");
       return c.json({ status: "filtered" }, 200);
     }
-    await sendToChat(telegram, c.env.TELEGRAM_CHAT_ID, testMessage.text, testMessage.url);
-    return c.json({ status: "sent" }, 200);
-  }
-
-  // Route to each channel that passes its filters, formatting per-channel
-  let sentCount = 0;
-  for (const channel of channels) {
-    if (!shouldForwardEvent(payload, channel.filters, scopeContext)) {
-      console.log(`[webhook] Filtered for ${channel.name}`);
-      continue;
+    deliveries.push({ chatId: c.env.TELEGRAM_CHAT_ID, text: testMessage.text, url: testMessage.url });
+  } else {
+    for (const channel of channels) {
+      if (!shouldForwardEvent(payload, channel.filters, scopeContext)) continue;
+      const msg = formatLinearEvent(payload, channel.display, formatContext);
+      if (msg) deliveries.push({ chatId: channel.chatId, text: msg.text, url: msg.url });
     }
-    const msg = formatLinearEvent(payload, channel.display);
-    if (!msg) continue;
-    await sendToChat(telegram, channel.chatId, msg.text, msg.url);
-    sentCount++;
   }
 
-  const totalMs = Date.now() - handlerStart;
-  console.log(`[webhook] Sent to ${sentCount}/${channels.length} channels | Worker total: ${totalMs}ms`);
-  return c.json({ status: "sent", channels: sentCount }, 200);
+  // 7. Send in parallel after responding: Linear treats anything slower than
+  // 5s as a failure and retries, which would post duplicates.
+  const telegram = new TelegramClient(c.env.TELEGRAM_BOT_TOKEN);
+  c.executionCtx.waitUntil(
+    Promise.all(deliveries.map((d) => sendToChat(telegram, d.chatId, d.text, d.url))).then(
+      (results) => {
+        const sent = results.filter(Boolean).length;
+        console.log(`[webhook] Sent ${sent}/${deliveries.length} | Worker total: ${Date.now() - handlerStart}ms`);
+      }
+    )
+  );
+
+  return c.json({ status: deliveries.length ? "sent" : "filtered", channels: deliveries.length }, 200);
 }
 
 // Accept webhooks at both paths
@@ -187,20 +207,19 @@ app.post("/", (c) => {
 // Telegram bot commands
 app.post("/webhook/telegram", async (c) => {
   const secret = c.req.header("X-Telegram-Bot-Api-Secret-Token");
-  if (secret !== c.env.TELEGRAM_WEBHOOK_SECRET) {
+  if (!secretMatches(secret, c.env.TELEGRAM_WEBHOOK_SECRET)) {
     return c.json({ error: "unauthorized" }, 401);
   }
 
   const update = await c.req.json();
   const telegram = new TelegramClient(c.env.TELEGRAM_BOT_TOKEN);
-  await handleTelegramUpdate(update, telegram, c.env.CONFIG);
+  await handleTelegramUpdate(update, telegram, c.env.CONFIG, c.env.TELEGRAM_CHAT_ID);
   return c.json({ ok: true });
 });
 
 // Admin: get channels
 app.get("/channels", async (c) => {
-  const token = c.req.header("Authorization")?.replace("Bearer ", "");
-  if (token !== c.env.ADMIN_TOKEN) {
+  if (!isAdminRequest(c)) {
     return c.json({ error: "unauthorized" }, 401);
   }
   const channels = await loadChannels(c.env.CONFIG);
@@ -209,8 +228,7 @@ app.get("/channels", async (c) => {
 
 // Admin: get global config (fallback when no channels)
 app.get("/config", async (c) => {
-  const token = c.req.header("Authorization")?.replace("Bearer ", "");
-  if (token !== c.env.ADMIN_TOKEN) {
+  if (!isAdminRequest(c)) {
     return c.json({ error: "unauthorized" }, 401);
   }
   const config = await loadFilterConfig(c.env.CONFIG);
@@ -219,8 +237,7 @@ app.get("/config", async (c) => {
 
 // Admin: update global config
 app.put("/config", async (c) => {
-  const token = c.req.header("Authorization")?.replace("Bearer ", "");
-  if (token !== c.env.ADMIN_TOKEN) {
+  if (!isAdminRequest(c)) {
     return c.json({ error: "unauthorized" }, 401);
   }
 
