@@ -1,17 +1,18 @@
 import { TelegramClient } from "../telegram/client";
+import { escapeHtml } from "../telegram/html";
 import {
   loadChannels,
   saveChannels,
   getChannelByChat,
 } from "../config/loader";
-import { DEFAULT_FILTER_CONFIG, DEFAULT_DISPLAY_CONFIG } from "../types/config";
-import type { FilterConfig, Channel, DisplayConfig } from "../types/config";
+import { defaultFilterConfig, DEFAULT_DISPLAY_CONFIG } from "../types/config";
+import type { Channel, DisplayConfig } from "../types/config";
 import type { LinearResourceType } from "../types/linear";
 
 interface TelegramUpdate {
   message?: {
     message_id: number;
-    chat: { id: number };
+    chat: { id: number; type?: string; title?: string; first_name?: string };
     text?: string;
     from?: { id: number; first_name: string };
     message_thread_id?: number;
@@ -23,6 +24,8 @@ const RESOURCE_TYPES: LinearResourceType[] = [
   "Document", "Initiative", "InitiativeUpdate", "IssueLabel",
   "Reaction", "IssueSLA", "Customer", "CustomerRequest", "User",
 ];
+
+const ADMIN_COMMANDS = ["/mute", "/unmute", "/reset", "/track", "/untrack", "/trackall", "/show", "/hide"];
 
 const PROJECT_DIRECTORY_KEY = "project_directory";
 const ADMIN_LIST_KEY = "admin_users";
@@ -56,30 +59,27 @@ async function saveProjectDirectory(kv: KVNamespace, projects: ProjectEntry[]): 
   await kv.put(PROJECT_DIRECTORY_KEY, JSON.stringify(projects));
 }
 
-// Get or create channel config for a chat
-async function ensureChannel(
-  kv: KVNamespace,
-  chatId: string,
-  chatName: string
-): Promise<{ channel: Channel; channels: Channel[] }> {
-  const channels = await loadChannels(kv);
+// Get or create the channel for a chat, keeping its name in step with the
+// chat's title. Callers save the channel list.
+function ensureChannel(channels: Channel[], chatId: string, chatTitle?: string): Channel {
   let channel = getChannelByChat(channels, chatId);
   if (!channel) {
-    channel = {
-      chatId,
-      name: chatName,
-      filters: { ...DEFAULT_FILTER_CONFIG },
-    };
+    channel = { chatId, name: chatTitle ?? `Chat ${chatId}`, filters: defaultFilterConfig() };
     channels.push(channel);
-    await saveChannels(kv, channels);
+  } else if (chatTitle && channel.name !== chatTitle) {
+    channel.name = chatTitle;
   }
-  return { channel, channels };
+  return channel;
 }
 
+// Blue only answers in chats it already posts to (registered channels and the
+// default chat). Anywhere else it stays silent, except for /whoami and for a
+// bot admin running an admin command, which registers the chat.
 export async function handleTelegramUpdate(
   update: TelegramUpdate,
   telegram: TelegramClient,
-  kv: KVNamespace
+  kv: KVNamespace,
+  defaultChatId: string
 ): Promise<void> {
   const msg = update.message;
   if (!msg?.text) return;
@@ -90,21 +90,49 @@ export async function handleTelegramUpdate(
   const command = parts[0]!.split("@")[0]!.toLowerCase();
   const args = parts.slice(1);
   const chatId = String(msg.chat.id);
+  const chatTitle = msg.chat.title ?? msg.chat.first_name;
   const topicId = msg.message_thread_id;
   const userId = msg.from?.id;
 
   const reply = async (text: string) => {
-    await telegram.sendMessage({ chatId, text, topicId });
+    const result = await telegram.sendMessage({ chatId, text, topicId });
+    if (!result.ok) {
+      console.error(`[telegram] Reply to ${chatId} failed: ${result.description}`);
+    }
   };
 
-  // Admin-only commands
-  const adminCommands = ["/mute", "/unmute", "/reset", "/track", "/untrack", "/trackall", "/show", "/hide"];
-  if (adminCommands.includes(command)) {
+  if (command === "/whoami") {
+    await reply(
+      `<b>Your Telegram user ID:</b> <code>${userId ?? "unknown"}</code>\n` +
+      `<b>This chat ID:</b> <code>${chatId}</code>`
+    );
+    return;
+  }
+
+  const channels = await loadChannels(kv);
+  const isKnownChat = chatId === defaultChatId || getChannelByChat(channels, chatId) !== undefined;
+  const isAdminCommand = ADMIN_COMMANDS.includes(command);
+
+  let isAdmin = false;
+  let adminCount = 0;
+  if (isAdminCommand) {
     const admins = await getAdminList(kv);
-    if (admins.length > 0 && userId && !admins.includes(userId)) {
-      await reply("Only admins can change config.");
-      return;
-    }
+    adminCount = admins.length;
+    isAdmin = userId !== undefined && admins.includes(userId);
+  }
+
+  if (!isKnownChat && !(isAdminCommand && isAdmin)) {
+    console.log(`[telegram] Ignored ${command} in unregistered chat ${chatId}`);
+    return;
+  }
+
+  if (isAdminCommand && !isAdmin) {
+    await reply(
+      adminCount === 0
+        ? "No admins are set up yet, so config can't be changed. Add your user ID (see /whoami) to the admin_users list."
+        : "Only admins can change config."
+    );
+    return;
   }
 
   switch (command) {
@@ -126,12 +154,12 @@ export async function handleTelegramUpdate(
         "/display — current display settings\n" +
         "/show &lt;field&gt; — show a field in messages\n" +
         "/hide &lt;field&gt; — hide a field from messages\n" +
-        "Fields: project, identifier, actor, transition"
+        "Fields: project, identifier, actor, transition, assignments, unassignments\n\n" +
+        "/whoami — your user ID and this chat's ID"
       );
       break;
 
     case "/status": {
-      const channels = await loadChannels(kv);
       const channel = getChannelByChat(channels, chatId);
       const directory = await getProjectDirectory(kv);
 
@@ -149,14 +177,13 @@ export async function handleTelegramUpdate(
       if (config.scope.projects.length === 0) {
         projectStatus = "all projects";
       } else {
-        const names = config.scope.projects
-          .map((id) => directory.find((p) => p.id === id)?.name ?? id)
+        projectStatus = config.scope.projects
+          .map((id) => escapeHtml(directory.find((p) => p.id === id)?.name ?? id))
           .join(", ");
-        projectStatus = names;
       }
 
       await reply(
-        `<b>Blue — ${channel.name}</b>\n\n` +
+        `<b>Blue — ${escapeHtml(channel.name)}</b>\n\n` +
         `<b>Muted:</b> ${muted.length ? muted.join(", ") : "none"}\n` +
         `<b>Projects:</b> ${projectStatus}`
       );
@@ -164,7 +191,6 @@ export async function handleTelegramUpdate(
     }
 
     case "/projects": {
-      const channels = await loadChannels(kv);
       const channel = getChannelByChat(channels, chatId);
       const directory = await getProjectDirectory(kv);
 
@@ -176,7 +202,7 @@ export async function handleTelegramUpdate(
       const scopedProjects = channel?.filters.scope.projects ?? [];
       const lines = directory.map((p) => {
         const tracked = scopedProjects.length === 0 || scopedProjects.includes(p.id);
-        return `${tracked ? "\u2705" : "\u274c"} ${p.name}`;
+        return `${tracked ? "\u2705" : "\u274c"} ${escapeHtml(p.name)}`;
       });
 
       const mode = scopedProjects.length === 0
@@ -198,19 +224,19 @@ export async function handleTelegramUpdate(
         (p) => p.name.toLowerCase() === name.toLowerCase()
       );
       if (!match) {
-        const available = directory.map((p) => p.name).join(", ");
+        const available = directory.map((p) => escapeHtml(p.name)).join(", ");
         await reply(
-          `Project "${name}" not found.\n` +
+          `Project "${escapeHtml(name)}" not found.\n` +
           (available ? `Available: ${available}` : "No projects registered yet.")
         );
         break;
       }
-      const { channel, channels } = await ensureChannel(kv, chatId, `Chat ${chatId}`);
+      const channel = ensureChannel(channels, chatId, chatTitle);
       if (!channel.filters.scope.projects.includes(match.id)) {
         channel.filters.scope.projects.push(match.id);
       }
       await saveChannels(kv, channels);
-      await reply(`Now tracking <b>${match.name}</b>. Only tracked projects will notify in this chat.`);
+      await reply(`Now tracking <b>${escapeHtml(match.name)}</b>. Only tracked projects will notify in this chat.`);
       break;
     }
 
@@ -225,10 +251,9 @@ export async function handleTelegramUpdate(
         (p) => p.name.toLowerCase() === name.toLowerCase()
       );
       if (!match) {
-        await reply(`Project "${name}" not found.`);
+        await reply(`Project "${escapeHtml(name)}" not found.`);
         break;
       }
-      const channels = await loadChannels(kv);
       const channel = getChannelByChat(channels, chatId);
       if (!channel) {
         await reply("No config for this chat yet.");
@@ -240,15 +265,14 @@ export async function handleTelegramUpdate(
       await saveChannels(kv, channels);
 
       if (channel.filters.scope.projects.length === 0) {
-        await reply(`Untracked <b>${match.name}</b>. No project filter — showing all.`);
+        await reply(`Untracked <b>${escapeHtml(match.name)}</b>. No project filter — showing all.`);
       } else {
-        await reply(`Untracked <b>${match.name}</b>.`);
+        await reply(`Untracked <b>${escapeHtml(match.name)}</b>.`);
       }
       break;
     }
 
     case "/trackall": {
-      const channels = await loadChannels(kv);
       const channel = getChannelByChat(channels, chatId);
       if (channel) {
         channel.filters.scope.projects = [];
@@ -268,10 +292,10 @@ export async function handleTelegramUpdate(
         (t) => t.toLowerCase() === type.toLowerCase()
       );
       if (!matched) {
-        await reply(`Unknown type: ${type}\nSee /types for options.`);
+        await reply(`Unknown type: ${escapeHtml(type)}\nSee /types for options.`);
         break;
       }
-      const { channel, channels } = await ensureChannel(kv, chatId, `Chat ${chatId}`);
+      const channel = ensureChannel(channels, chatId, chatTitle);
       channel.filters.events[matched] = [];
       await saveChannels(kv, channels);
       await reply(`Muted <b>${matched}</b> in this chat.`);
@@ -288,10 +312,9 @@ export async function handleTelegramUpdate(
         (t) => t.toLowerCase() === type.toLowerCase()
       );
       if (!matched) {
-        await reply(`Unknown type: ${type}\nSee /types for options.`);
+        await reply(`Unknown type: ${escapeHtml(type)}\nSee /types for options.`);
         break;
       }
-      const channels = await loadChannels(kv);
       const channel = getChannelByChat(channels, chatId);
       if (channel) {
         delete channel.filters.events[matched];
@@ -309,10 +332,9 @@ export async function handleTelegramUpdate(
       break;
 
     case "/reset": {
-      const channels = await loadChannels(kv);
       const channel = getChannelByChat(channels, chatId);
       if (channel) {
-        channel.filters = { ...DEFAULT_FILTER_CONFIG, scope: { projects: [], teams: [], labels: [] } };
+        channel.filters = defaultFilterConfig();
         await saveChannels(kv, channels);
       }
       await reply("Filters reset for this chat. All events, all projects.");
@@ -320,14 +342,15 @@ export async function handleTelegramUpdate(
     }
 
     case "/display": {
-      const channels = await loadChannels(kv);
       const channel = getChannelByChat(channels, chatId);
-      const d = channel?.display ?? DEFAULT_DISPLAY_CONFIG;
+      const d = { ...DEFAULT_DISPLAY_CONFIG, ...channel?.display };
       const fields = [
         ["project", d.showProject],
         ["identifier", d.showIdentifier],
         ["actor", d.showActor],
         ["transition", d.showTransition],
+        ["assignments", d.showAssignments],
+        ["unassignments", d.showUnassignments],
       ] as const;
       const lines = fields.map(
         ([name, on]) => `${on ? "\u2705" : "\u274c"} ${name}`
@@ -345,17 +368,19 @@ export async function handleTelegramUpdate(
         id: "showIdentifier",
         actor: "showActor",
         transition: "showTransition",
+        assignments: "showAssignments",
+        assignment: "showAssignments",
+        unassignments: "showUnassignments",
+        unassignment: "showUnassignments",
       };
       if (!field || !fieldMap[field]) {
-        await reply("Usage: /show &lt;field&gt; or /hide &lt;field&gt;\nFields: project, identifier, actor, transition");
+        await reply("Usage: /show &lt;field&gt; or /hide &lt;field&gt;\nFields: project, identifier, actor, transition, assignments, unassignments");
         break;
       }
       const key = fieldMap[field]!;
       const value = command === "/show";
-      const { channel, channels } = await ensureChannel(kv, chatId, `Chat ${chatId}`);
-      if (!channel.display) {
-        channel.display = { ...DEFAULT_DISPLAY_CONFIG };
-      }
+      const channel = ensureChannel(channels, chatId, chatTitle);
+      channel.display = { ...DEFAULT_DISPLAY_CONFIG, ...channel.display };
       channel.display[key] = value;
       await saveChannels(kv, channels);
       await reply(`${value ? "Showing" : "Hiding"} <b>${field}</b> in messages.`);
@@ -367,14 +392,19 @@ export async function handleTelegramUpdate(
   }
 }
 
-// Auto-register projects from webhook events
+// Auto-register projects from webhook events, and pick up renames
 export async function registerProject(
   kv: KVNamespace,
   projectId: string,
   projectName: string
 ): Promise<void> {
   const directory = await getProjectDirectory(kv);
-  if (directory.some((p) => p.id === projectId)) return;
-  directory.push({ id: projectId, name: projectName });
+  const existing = directory.find((p) => p.id === projectId);
+  if (existing) {
+    if (existing.name === projectName) return;
+    existing.name = projectName;
+  } else {
+    directory.push({ id: projectId, name: projectName });
+  }
   await saveProjectDirectory(kv, directory);
 }

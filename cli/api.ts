@@ -28,8 +28,8 @@ export class PulseAPI {
     return res.json();
   }
 
-  async getTopics(): Promise<unknown> {
-    const res = await fetch(`${this.workerUrl}/topics`, {
+  async getChannels(): Promise<unknown> {
+    const res = await fetch(`${this.workerUrl}/channels`, {
       headers: { Authorization: `Bearer ${this.adminToken}` },
     });
     return res.json();

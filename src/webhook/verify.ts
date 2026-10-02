@@ -40,3 +40,17 @@ export function isTimestampValid(
 ): boolean {
   return Math.abs(Date.now() - webhookTimestamp) <= maxDriftMs;
 }
+
+// Constant-time string comparison for shared secrets (admin token, Telegram
+// webhook secret). An unset expected value never matches.
+export function secretMatches(provided: string | undefined, expected: string | undefined): boolean {
+  if (!expected || provided === undefined) return false;
+  const encoder = new TextEncoder();
+  const a = encoder.encode(provided);
+  const b = encoder.encode(expected);
+  let diff = a.length ^ b.length;
+  for (let i = 0; i < Math.max(a.length, b.length); i++) {
+    diff |= (a[i] ?? 0) ^ (b[i] ?? 0);
+  }
+  return diff === 0;
+}

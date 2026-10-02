@@ -8,10 +8,10 @@ Linear Pulse is a Cloudflare Worker that relays [Linear](https://linear.app) web
 - **HMAC-SHA256 signature verification** with timestamp drift protection
 - **3-layer filter engine** -- event type/action filtering, project/team/label scoping, and noisy-field suppression
 - **Multi-channel routing** -- send different projects to different Telegram chats, each with their own filter config
-- **Forum topic routing** -- auto-create Telegram forum topics per Linear project
 - **Smart formatting** -- status transitions show old/new state, priority escalations are highlighted, comments are truncated, urgent issues get a red dot
 - **Auto-discovery** -- projects are registered automatically as events arrive; no manual ID entry needed
 - **Per-chat admin controls** -- `/mute`, `/track`, `/reset` directly in Telegram
+- **Locked to your chats** -- Blue ignores commands in chats it doesn't post to, and only listed admins can change config or add a chat
 - **CLI tool** -- manage bot profile, view/update config, check health
 - **Admin API** -- Bearer-token-protected endpoints for config reads and writes
 - **Issue-to-project caching** -- comments (which lack project data in Linear's payload) are routed correctly via a KV lookup cache
@@ -34,13 +34,15 @@ Linear Webhook --> [Signature Verify] --> [Filter Engine] --> [Formatter] --> [C
 linear-pulse/
   src/
     index.ts                  # Hono app, all routes, main webhook handler
+    index.test.ts
     types/
       linear.ts               # Linear webhook payload types
       config.ts               # FilterConfig, Channel, TopicConfig types + defaults
     webhook/
-      verify.ts               # HMAC-SHA256 signature verification + timestamp check
+      verify.ts               # HMAC-SHA256 signature verification, timestamp check, secret compare
       verify.test.ts
       telegram.ts             # Telegram bot command handler + project auto-registration
+      telegram.test.ts
     filters/
       engine.ts               # 3-layer filter: event, scope, field
       engine.test.ts
@@ -48,11 +50,12 @@ linear-pulse/
       loader.ts               # KV read/write, merge, validation for FilterConfig + channels
       project-cache.ts        # Issue ID -> Project ID cache (30-day TTL)
     telegram/
-      client.ts               # Telegram Bot API client (send, topics, bot profile)
+      client.ts               # Telegram Bot API client (send, bot profile)
       formatter.ts            # Per-event-type HTML message templates
       formatter.test.ts
-    topics/
-      router.ts               # Forum topic resolution + auto-creation
+      html.ts                 # HTML escaping + safe truncation
+    testing/
+      fakes.ts                # In-memory KV + Telegram fakes for tests
   cli/
     index.ts                  # CLI entry point
     api.ts                    # HTTP clients for worker admin API + Telegram API
@@ -60,7 +63,7 @@ linear-pulse/
     commands/
       bot.ts                  # bot setup, info, set-description
       config.ts               # config get, set (--enable/--disable), reset
-      status.ts               # health check + topic listing
+      status.ts               # health check + channel listing
   wrangler.toml
   package.json
   tsconfig.json
@@ -128,6 +131,8 @@ npx wrangler secret put TELEGRAM_WEBHOOK_SECRET
 | `ADMIN_TOKEN` | Generate yourself -- any strong random string (used for the admin API) |
 | `TELEGRAM_WEBHOOK_SECRET` | Generate yourself -- any strong random string (used to verify Telegram webhook requests) |
 
+All five are required. If `ADMIN_TOKEN` or `TELEGRAM_WEBHOOK_SECRET` is missing, the endpoints that check it reject every request.
+
 For local development, copy `.dev.vars.example` to `.dev.vars` and fill in the values.
 
 ### 5. Deploy
@@ -173,7 +178,15 @@ Configure Blue's Telegram profile (description, about text):
 TELEGRAM_BOT_TOKEN=<token> npm run cli -- bot setup
 ```
 
-### 9. Seed the Project Directory
+### 9. Add Admins
+
+Admin commands are refused until at least one admin is listed. Send `/whoami` to Blue (in any chat) to get your Telegram user ID, then store the list of admin IDs in KV:
+
+```bash
+npx wrangler kv key put admin_users '[123456789]' --binding CONFIG --remote
+```
+
+### 10. Seed the Project Directory
 
 The project directory is populated automatically as Linear events arrive. To seed it immediately, create or update an issue in each Linear project. Blue will register each project on first contact.
 
@@ -184,11 +197,13 @@ By default, all events go to the single chat specified by `TELEGRAM_CHAT_ID`. Fo
 **How it works:**
 
 1. Add Blue to a second Telegram group
-2. Send `/track <project name>` in that group -- this auto-registers the group as a channel with its own filter config
+2. As an admin, send `/track <project name>` in that group -- this registers the group as a channel with its own filter config. Only admins can register a new chat.
 3. Events for that project now go to that group only (if it's the only group tracking it)
 4. Groups with no project scope (empty `scope.projects`) receive all events
 
 Each channel stores its own independent `FilterConfig` in KV under the `channels` key. When a webhook arrives, the worker iterates all channels and sends to each one whose filters pass.
+
+Once any channel exists, `TELEGRAM_CHAT_ID` and the global `filter_config` are no longer used for routing. Register the default chat as a channel too (run any admin command in it) if it should keep receiving events.
 
 **Example:**
 
@@ -198,7 +213,7 @@ Each channel stores its own independent `FilterConfig` in KV under the `channels
 
 ## Telegram Commands
 
-All commands work in group chats where Blue is a member. Admin-only commands require the user's Telegram ID to be in the admin list (stored in KV under `admin_users`).
+Blue answers only in chats it posts to: registered channels and the `TELEGRAM_CHAT_ID` chat. In any other chat it ignores everything except `/whoami`, and an admin-only command from an admin, which registers that chat. Admin-only commands require the sender's Telegram user ID to be in the admin list (KV key `admin_users`). If the list is empty, nobody can run them.
 
 | Command | Description | Admin Only |
 |---|---|---|
@@ -212,6 +227,10 @@ All commands work in group chats where Blue is a member. Admin-only commands req
 | `/untrack <name>` | Remove a project from this chat's scope | Yes |
 | `/trackall` | Clear project filter -- receive events for all projects | Yes |
 | `/reset` | Reset all filters for this chat to defaults | Yes |
+| `/display` | Show which fields appear in messages | No |
+| `/show <field>` | Show a field or message kind (`project`, `identifier`, `actor`, `transition`, `assignments`, `unassignments`) | Yes |
+| `/hide <field>` | Hide a field, or stop assignment/unassignment messages | Yes |
+| `/whoami` | Your Telegram user ID and this chat's ID (works in any chat) | No |
 
 **Resource types available for muting:** Issue, Comment, Project, ProjectUpdate, Cycle, Document, Initiative, InitiativeUpdate, IssueLabel, Reaction, IssueSLA, Customer, CustomerRequest, User
 
@@ -229,6 +248,8 @@ export PULSE_ADMIN_TOKEN=<your-admin-token>
 
 ### Commands
 
+The `config` commands edit the global config, which only routes events while no chat has its own channel config. The CLI warns when that's the case.
+
 ```bash
 # Bot management
 npm run cli -- bot setup                    # Set Blue's description + about text
@@ -244,7 +265,7 @@ npm run cli -- config set --enable Issue.remove   # Re-enable issue deletions
 npm run cli -- config reset                 # Reset global config to defaults
 
 # Health & diagnostics
-npm run cli -- status                       # Check worker health + topic mappings
+npm run cli -- status                       # Check worker health + list channel configs
 ```
 
 ## Configuration
@@ -287,7 +308,7 @@ Restricts events to specific projects, teams, or labels. Stored in `config.scope
 - Empty array = no filtering (all pass)
 - Non-empty array = event must match at least one entry
 
-For comments (which don't carry project info in Linear's payload), the worker uses a KV cache of issue-to-project mappings to resolve the project. These are cached with a 30-day TTL.
+For comments (which don't carry project info in Linear's payload), the worker uses a KV cache of issue-to-project mappings to resolve the project. Every Issue event updates the cache, including ones that don't notify. Entries expire after 30 days.
 
 **Layer 3 -- Field-Level Update Filtering**
 
@@ -312,9 +333,9 @@ All config is stored in a single Workers KV namespace under these keys:
 | `filter_config` | Global `FilterConfig` (fallback when no channels are configured) |
 | `channels` | Array of `Channel` objects, each with `chatId`, `name`, and its own `FilterConfig` |
 | `project_directory` | Array of `{ id, name }` entries, auto-populated from events |
-| `topic_mappings` | Map of Linear project ID to Telegram forum topic ID |
 | `admin_users` | Array of Telegram user IDs allowed to run admin commands |
 | `ip:<issueId>` | Cached project ID for a given issue (30-day TTL) |
+| `st:<stateId>` | Cached workflow state name, so status messages can show "Old → New" (Linear's `updatedFrom` only carries the old `stateId`) |
 
 ## API Endpoints
 

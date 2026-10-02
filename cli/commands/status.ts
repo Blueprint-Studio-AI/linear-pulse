@@ -14,9 +14,9 @@ export async function status(
   }
 
   try {
-    const topics = await api.getTopics();
-    console.log("Topics:", JSON.stringify(topics, null, 2));
+    const channels = await api.getChannels();
+    console.log("Channels:", JSON.stringify(channels, null, 2));
   } catch (e) {
-    console.error("Topics fetch failed:", (e as Error).message);
+    console.error("Channels fetch failed:", (e as Error).message);
   }
 }

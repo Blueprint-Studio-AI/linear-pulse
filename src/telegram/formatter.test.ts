@@ -85,6 +85,34 @@ describe("formatLinearEvent", () => {
     expect(result!.text).toContain("(ENG-142)");
   });
 
+  it("names the old state from context when Linear only sends stateId", () => {
+    const payload = makeIssuePayload(
+      "update",
+      { state: { id: "s2", name: "In Progress", type: "started" } },
+      { stateId: "s1", updatedAt: "2026-10-02T09:22:36.867Z" }
+    );
+    expect(formatLinearEvent(payload)!.text).not.toContain("\u2192");
+    const result = formatLinearEvent(payload, undefined, { previousStateName: "Todo" });
+    expect(result!.text).toContain("Todo \u2192 In Progress");
+  });
+
+  it("hides unassignments when the chat turns them off", () => {
+    const payload = makeIssuePayload("update", { assignee: undefined }, { assigneeId: "u2" });
+    expect(formatLinearEvent(payload)!.text).toContain("Unassigned");
+    expect(formatLinearEvent(payload, { showUnassignments: false })).toBeNull();
+  });
+
+  it("hides assignments when the chat turns them off", () => {
+    const payload = makeIssuePayload("update", { assignee: { id: "u2", name: "Jordan" } }, { assigneeId: null });
+    expect(formatLinearEvent(payload, { showAssignments: false })).toBeNull();
+  });
+
+  it("still shows assignments for display configs saved before the toggles existed", () => {
+    const payload = makeIssuePayload("update", { assignee: { id: "u2", name: "Jordan" } }, { assigneeId: null });
+    const oldConfig = { showProject: true, showIdentifier: true, showActor: true, showTransition: true };
+    expect(formatLinearEvent(payload, oldConfig)!.text).toContain("Assigned to Jordan");
+  });
+
   it("shows escalation to urgent", () => {
     const result = formatLinearEvent(
       makeIssuePayload(
@@ -170,7 +198,7 @@ describe("formatLinearEvent", () => {
     expect(result!.text).toContain("...");
   });
 
-  it("formats generic event type", () => {
+  it("returns null for event types Blue doesn't announce", () => {
     const payload: LinearWebhookPayload = {
       action: "create",
       type: "Cycle",
@@ -182,9 +210,51 @@ describe("formatLinearEvent", () => {
       webhookId: "wh-3",
       organizationId: "org-1",
     };
+    expect(formatLinearEvent(payload)).toBeNull();
+  });
+
+  it("never cuts an HTML entity when truncating", () => {
+    const payload = makeCommentPayload("x".repeat(198) + "&& <b> rest");
     const result = formatLinearEvent(payload);
     expect(result).not.toBeNull();
-    expect(result!.text).toContain("Cycle");
-    expect(result!.text).toContain("Sprint 14");
+    // Every & in the output must start a complete entity
+    expect(result!.text).not.toMatch(/&(?!amp;|lt;|gt;)/);
+    expect(result!.text).toContain("&amp;&amp;...");
+  });
+
+  it("never splits an emoji when truncating", () => {
+    const payload = makeCommentPayload("x".repeat(199) + "\ud83d\ude80 rest");
+    const result = formatLinearEvent(payload);
+    expect(result!.text).toContain("\ud83d\ude80...");
+  });
+
+  it("reads naturally when the actor is hidden", () => {
+    const result = formatLinearEvent(makeCommentPayload("Looks good"), {
+      showProject: true,
+      showIdentifier: true,
+      showActor: false,
+      showTransition: true,
+    });
+    expect(result!.text).toContain("New comment on");
+    expect(result!.text).not.toContain("New commented");
   });
 });
+
+function makeCommentPayload(body: string): LinearWebhookPayload {
+  return {
+    action: "create",
+    type: "Comment",
+    actor: { id: "u1", type: "user", name: "Alex" },
+    data: {
+      id: "c1",
+      body,
+      issue: { id: "i1", identifier: "ENG-142", title: "Test" },
+      user: { id: "u1", name: "Alex" },
+    },
+    url: "https://linear.app/test/issue/ENG-142#comment-c1",
+    createdAt: new Date().toISOString(),
+    webhookTimestamp: Date.now(),
+    webhookId: "wh-2",
+    organizationId: "org-1",
+  };
+}
